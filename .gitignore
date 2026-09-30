@@ -13,6 +13,8 @@ venv/
 .env
 
 # Private chat files & generated data
-*.txt
 *.xlsx
 *.csv
+chat*.txt
+*.txt
+!requirements.txt

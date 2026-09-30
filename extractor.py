@@ -1,5 +1,6 @@
 import os
 import json
+import re
 from typing import List, Dict, Any, Optional
 from pydantic import BaseModel, Field
 from google import genai
@@ -18,9 +19,15 @@ class ProviderRecommendation(BaseModel):
 class RecommendationBatch(BaseModel):
     recomendados: List[ProviderRecommendation]
 
-class DynamicExtractionResult(BaseModel):
-    columnas: List[str] = Field(description="Lista de nombres de columnas claras y descriptivas en español ideales para esta consulta")
-    filas: List[Dict[str, Any]] = Field(description="Lista de registros extraidos, donde cada registro tiene las claves definidas en columnas mas 'cita_o_fuente'")
+def _clean_json_text(text: str) -> str:
+    text = text.strip()
+    if text.startswith("```json"):
+        text = text[7:]
+    elif text.startswith("```"):
+        text = text[3:]
+    if text.endswith("```"):
+        text = text[:-3]
+    return text.strip()
 
 class WhatsAppInsightExtractor:
     def __init__(self, api_key: Optional[str] = None, model: str = "gemini-3.8-flash"):
@@ -35,34 +42,25 @@ class WhatsAppInsightExtractor:
             "Eres un analista experto en extraer recomendaciones de servicios y personas a partir de chats de WhatsApp.\n"
             "Tu objetivo es encontrar TODAS las personas, profesionales, tecnicos o comercios recomendados en la conversacion.\n"
             "Presta especial atencion a pedidos de recomendacion y sus respuestas, y contactos compartidos.\n\n"
-            "Extrae con precision:\n"
-            "- nombre: solo el nombre de pila o nombre comercial\n"
-            "- apellido: apellido si aparece\n"
-            "- rubro: profesion estandarizada (ej: Herrero, Plomero, Electricista, Techista, Jardineria, etc.)\n"
-            "- telefono: numero de telefono limpio o contacto\n"
-            "- barrio: barrio o localidad si se deduce\n"
-            "- motivo: elogio o descripcion dada (ej: 'muy cumplidor', 'excelente trabajo', 'honesto')\n"
-            "- avisado: 'No'\n"
-            "- notas: quien lo recomendo y contexto relevante\n\n"
+            "Debes responder en formato JSON con la siguiente estructura:\n"
+            "{\n"
+            '  "recomendados": [\n'
+            '    {\n'
+            '      "nombre": "Nombre de pila o comercio",\n'
+            '      "apellido": "Apellido si aparece",\n'
+            '      "rubro": "Profesion estandarizada (ej: Plomero, Electricista, etc.)",\n'
+            '      "telefono": "Numero de telefono o contacto",\n'
+            '      "barrio": "Barrio deducido o Haras Santa Maria",\n'
+            '      "motivo": "Elogio o motivo (ej: muy cumplidor, honesto)",\n'
+            '      "avisado": "No",\n'
+            '      "notas": "Quien lo recomendo y contexto"\n'
+            "    }\n"
+            "  ]\n"
+            "}\n\n"
             f"Historial de conversacion:\n{messages_text}"
         )
 
         try:
-            interaction = self.client.interactions.create(
-                model=self.model,
-                input=prompt,
-                response_format=[
-                    {
-                        "type": "text",
-                        "mime_type": "application/json",
-                        "schema": RecommendationBatch.model_json_schema(),
-                    }
-                ],
-            )
-            raw_text = interaction.output_text
-            data = json.loads(raw_text)
-            return data.get("recomendados", [])
-        except Exception:
             response = self.client.models.generate_content(
                 model=self.model,
                 contents=prompt,
@@ -71,7 +69,18 @@ class WhatsAppInsightExtractor:
                     response_schema=RecommendationBatch,
                 ),
             )
-            data = json.loads(response.text)
+            data = json.loads(_clean_json_text(response.text))
+            return data.get("recomendados", [])
+        except Exception:
+            # Fallback sin response_schema estricto para evitar restricciones de Developer API
+            response = self.client.models.generate_content(
+                model=self.model,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                ),
+            )
+            data = json.loads(_clean_json_text(response.text))
             return data.get("recomendados", [])
 
     def extract_dynamic_query(self, messages_text: str, user_query: str) -> Dict[str, Any]:
@@ -84,30 +93,28 @@ class WhatsAppInsightExtractor:
             "3. Para cada ocurrencia, llena los valores correspondientes a esas columnas.\n"
             "4. Incluye siempre una columna adicional llamada 'cita_o_fuente' con la fecha o fragmento del mensaje para verificar el dato.\n"
             "5. Si no hay informacion relevante sobre la consulta, devuelve filas como una lista vacia.\n\n"
+            "Debes responder UNICAMENTE con un objeto JSON con la siguiente estructura exacta:\n"
+            "{\n"
+            '  "columnas": ["Columna1", "Columna2", "Columna3", "cita_o_fuente"],\n'
+            '  "filas": [\n'
+            '    {\n'
+            '      "Columna1": "valor...",\n'
+            '      "Columna2": "valor...",\n'
+            '      "Columna3": "valor...",\n'
+            '      "cita_o_fuente": "fecha o mensaje..."\n'
+            '    }\n'
+            '  ]\n'
+            "}\n\n"
             f"Historial de mensajes:\n{messages_text}"
         )
 
-        try:
-            interaction = self.client.interactions.create(
-                model=self.model,
-                input=prompt,
-                response_format=[
-                    {
-                        "type": "text",
-                        "mime_type": "application/json",
-                        "schema": DynamicExtractionResult.model_json_schema(),
-                    }
-                ],
-            )
-            raw_text = interaction.output_text
-            return json.loads(raw_text)
-        except Exception:
-            response = self.client.models.generate_content(
-                model=self.model,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                    response_schema=DynamicExtractionResult,
-                ),
-            )
-            return json.loads(response.text)
+        # En Gemini Developer API, para esquemas libres/dinamicos se usa response_mime_type sin response_schema
+        # para evitar el error 'additionalProperties is only supported in Gemini Enterprise'
+        response = self.client.models.generate_content(
+            model=self.model,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+            ),
+        )
+        return json.loads(_clean_json_text(response.text))

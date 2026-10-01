@@ -50,7 +50,7 @@ def normalize_dynamic_result(data: Any, default_chat: str = "") -> Dict[str, Any
         filas = [item for item in data if isinstance(item, dict)]
     elif isinstance(data, dict):
         respuesta_directa = str(data.get("respuesta_directa") or data.get("resumen") or "").strip()
-        for key in ["filas", "resultados", "datos", "registros", "items", "proveedores", "recomendaciones"]:
+        for key in ["filas", "resultados", "datos", "registros", "items", "proveedores", "recomendaciones", "recomendados"]:
             val = data.get(key)
             if isinstance(val, list):
                 filas = [item for item in val if isinstance(item, dict)]
@@ -69,7 +69,12 @@ def normalize_dynamic_result(data: Any, default_chat: str = "") -> Dict[str, Any
 
     if default_chat and filas:
         for f in filas:
-            if not f.get("chat_origen") and not f.get("chat"):
+            if "chat" in f and not f.get("chat"):
+                f["chat"] = default_chat
+            elif "chat_origen" in f and not f.get("chat_origen"):
+                f["chat_origen"] = default_chat
+            elif not f.get("chat") and not f.get("chat_origen"):
+                f["chat"] = default_chat
                 f["chat_origen"] = default_chat
 
     return {
@@ -164,30 +169,31 @@ def deduplicate_recommendations(items: List[Dict[str, Any]]) -> List[Dict[str, A
     return list(merged_map.values())
 
 class WhatsAppInsightExtractor:
-    def __init__(self, api_key: Optional[str] = None, model: str = "gemini-2.0-flash"):
+    def __init__(self, api_key: Optional[str] = None, model: str = "gemini-2.5-flash"):
         self.api_key = api_key or os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
         if not self.api_key:
             raise ValueError("No se encontro una API Key de Gemini. Por favor configurala en la app o en las variables de entorno.")
         self.client = genai.Client(
             api_key=self.api_key,
-            http_options=types.HttpOptions(timeout=35000)
+            http_options=types.HttpOptions(timeout=60000)
         )
-        self.model = model or "gemini-2.0-flash"
+        self.model = model or "gemini-2.5-flash"
 
-    def _generate_with_retry(self, contents: str, config: types.GenerateContentConfig, max_retries: int = 3) -> Any:
-        candidate_models = [self.model]
-        fallbacks = ["gemini-2.0-flash", "gemini-2.5-flash", "gemini-1.5-flash"]
-        for fb in fallbacks:
-            if fb not in candidate_models:
-                candidate_models.append(fb)
+    def _generate_with_retry(self, contents: str, config: types.GenerateContentConfig, max_retries: int = 2) -> Any:
+        active_models = ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.0-flash"]
+        candidate_models = []
+        if self.model and self.model in active_models:
+            candidate_models.append(self.model)
+        for m in active_models:
+            if m not in candidate_models:
+                candidate_models.append(m)
 
-        last_error = None
+        model_errors = {}
         for model_name in candidate_models:
             for attempt in range(max_retries):
                 try:
-                    # Clonar config para evitar mutar el original
                     call_config = config.model_copy() if hasattr(config, "model_copy") else config
-                    # Desactivar 'thinking' en 2.5 para eliminar la latencia de razonamiento (de 2 min a 3 seg)
+                    # Desactivar thinking en 2.5 para eliminar latencia y acelerar a ~2-3 segundos
                     if "2.5" in model_name:
                         call_config.thinking_config = types.ThinkingConfig(thinking_budget=0)
                     else:
@@ -200,15 +206,22 @@ class WhatsAppInsightExtractor:
                     )
                     return response
                 except Exception as e:
-                    last_error = e
-                    err_msg = str(e).lower()
-                    if any(term in err_msg for term in ["503", "429", "unavailable", "high demand", "capacity", "temporary", "timeout", "deadline"]):
-                        wait_sec = (attempt + 1) * 1.5 + random.uniform(0.3, 0.8)
-                        time.sleep(wait_sec)
+                    err_msg = str(e)
+                    model_errors[f"{model_name}_intento_{attempt+1}"] = err_msg
+                    err_lower = err_msg.lower()
+                    if any(term in err_lower for term in ["503", "429", "unavailable", "high demand", "capacity", "temporary", "timeout", "deadline"]):
+                        if attempt < max_retries - 1:
+                            wait_sec = 1.0 + random.uniform(0.2, 0.5)
+                            time.sleep(wait_sec)
+                        else:
+                            # Ante saturación/demanda, pasar de inmediato al siguiente modelo de fallback
+                            break
                     else:
-                        # Si es error no transitorio (ej: modelo no soportado en esta cuenta), pasar directo al fallback
+                        # Si es error no transitorio, pasar de inmediato al siguiente modelo
                         break
-        raise last_error
+
+        summary = "; ".join([f"{k}: {v[:120]}" for k, v in model_errors.items()])
+        raise RuntimeError(f"Error procesando con la IA ({summary})")
 
     def extract_recommendations(self, messages_text: str) -> List[Dict[str, Any]]:
         prompt = (
@@ -258,11 +271,12 @@ class WhatsAppInsightExtractor:
             f"SOLICITUD Y CRITERIOS DEL USUARIO:\n{user_query}\n\n"
             "INSTRUCCIONES:\n"
             "1. Cumple de forma estricta con TODOS los filtros, condiciones, oficios, exclusiones y nombres de columnas pedidos por el usuario.\n"
-            "2. Si el usuario indicó nombres exactos de columnas (ej: proveedor_nombre, rubro, fecha, recomienda, etc.), "
+            "2. Si el usuario indicó nombres exactos de columnas (ej: proveedor_nombre, rubro, fecha, recomienda, chat, etc.), "
             "UTILIZA EXACTAMENTE esos nombres como claves de cada objeto en la lista 'filas'.\n"
-            "3. En 'respuesta_directa', redacta un resumen claro en español de lo que encontraste (quiénes, qué dijeron, acuerdos o recomendaciones).\n"
-            "4. En 'filas', agrega todas las ocurrencias o filas encontradas que cumplan con la solicitud del usuario.\n"
-            "5. Si no hay ocurrencias que cumplan los criterios en estos mensajes, devuelve 'filas': [] y en 'respuesta_directa' aclara brevemente que no hubo menciones.\n\n"
+            "3. En los mensajes verás encabezados de la forma '[NombreDelChat | 29/9/2026, 14:49] Remitente: Texto'. Si te piden la columna 'chat' o grupo, usa 'NombreDelChat'.\n"
+            "4. En 'respuesta_directa', redacta un resumen claro en español de lo que encontraste (quiénes, qué dijeron, acuerdos o recomendaciones).\n"
+            "5. En 'filas', agrega todas las ocurrencias o filas encontradas que cumplan con la solicitud del usuario.\n"
+            "6. Si no hay ocurrencias que cumplan los criterios en estos mensajes, devuelve 'filas': [] y en 'respuesta_directa' aclara brevemente que no hubo menciones.\n\n"
             "Responde en formato JSON con la siguiente estructura (o directamente un array de objetos JSON con las columnas solicitadas):\n"
             "{\n"
             '  "respuesta_directa": "Resumen de lo encontrado...",\n'
@@ -286,13 +300,13 @@ class WhatsAppInsightExtractor:
     def extract_recommendations_batched(
         self,
         messages: List[Any],
-        chunk_size: int = 350,
+        chunk_size: int = 200,
         deduplicate: bool = True,
         progress_callback: Optional[Any] = None
     ) -> List[Dict[str, Any]]:
         """
-        Procesa los mensajes en lotes de tamaño `chunk_size` (350 por defecto) para
-        garantizar respuestas rápidas (~3s por lote) sin saturar límites de tokens de salida.
+        Procesa los mensajes en lotes ágiles de tamaño `chunk_size` (200 por defecto) para
+        garantizar respuestas rápidas (~2-4s por lote) sin saturar límites de tokens de salida.
         """
         if not messages:
             return []
@@ -352,12 +366,12 @@ class WhatsAppInsightExtractor:
         self,
         messages: List[Any],
         user_query: str,
-        chunk_size: int = 350,
+        chunk_size: int = 200,
         progress_callback: Optional[Any] = None
     ) -> Dict[str, Any]:
         """
-        Procesa una consulta universal en lotes ágiles de 350 mensajes para
-        garantizar velocidad, respuesta continua y sin timeouts.
+        Procesa una consulta universal en lotes ágiles de 200 mensajes para
+        garantizar velocidad instantánea, respuesta continua y sin timeouts.
         """
         if not messages:
             return {
@@ -423,13 +437,19 @@ class WhatsAppInsightExtractor:
                     f"Lote {chunk_num} de {total_chunks} completado."
                 )
 
-        # Sintetizar respuesta directa
-        if respuestas_parciales:
-            respuesta_final = "\n\n".join(respuestas_parciales)
-        elif all_filas:
-            respuesta_final = f"Se encontraron {len(all_filas)} registros relevantes en las conversaciones analizadas."
+        # Sintetizar respuesta directa conservando datos incluso si un lote aislado falló
+        if all_filas:
+            prefix = ""
+            if batch_errors:
+                prefix = f"⚠️ *Nota: Hubo una interrupción en {len(batch_errors)} lote(s), pero se extrajeron los registros del resto de los mensajes exitosamente.*\n\n"
+            if respuestas_parciales:
+                respuesta_final = prefix + "\n\n".join(respuestas_parciales)
+            else:
+                respuesta_final = prefix + f"Se encontraron {len(all_filas)} registros relevantes en las conversaciones analizadas."
         elif batch_errors:
             respuesta_final = f"Ocurrió un error al procesar los mensajes con la IA: {batch_errors[0]}"
+        elif respuestas_parciales:
+            respuesta_final = "\n\n".join(respuestas_parciales)
         else:
             respuesta_final = "No se encontraron menciones ni datos relevantes que cumplan con todos los filtros y condiciones solicitadas en los mensajes analizados."
 

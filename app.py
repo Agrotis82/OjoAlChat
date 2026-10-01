@@ -56,9 +56,9 @@ with st.sidebar:
     
     model_choice = st.selectbox(
         "Modelo de IA",
-        ["gemini-2.0-flash", "gemini-2.5-flash", "gemini-1.5-flash"],
+        ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.0-flash"],
         index=0,
-        help="gemini-2.0-flash es ultra rápido y recomendado para procesar chats en segundos."
+        help="gemini-2.5-flash es el modelo más reciente y preciso de Google. gemini-2.5-flash-lite es ultra rápido."
     )
     
     st.divider()
@@ -191,20 +191,27 @@ else:
 
         st.markdown("**Ideas y casos de uso populares (haz clic para autocompletar):**")
         ex_r1 = st.columns(3)
-        if ex_r1[0].button("🏫 Escuela / Padres"):
+        if ex_r1[0].button("🔨 Proveedores Detallados"):
+            st.session_state["search_query_input"] = (
+                "Extraé cada vez que alguien del chat recomienda a un proveedor de servicios para la casa, la familia o eventos. "
+                "Una fila por recomendación: si dos personas recomiendan al mismo, van dos filas. "
+                "Usá exactamente estas columnas: proveedor_nombre, proveedor_apellido, rubro, telefono_proveedor, recomienda, chat, fecha, motivo, cita_o_fuente.\n"
+                "- telefono_proveedor: SOLO el número del proveedor, que aparece en el texto del mensaje o en un contacto compartido. NUNCA el número de quien escribe el mensaje. Si no aparece, vacío.\n"
+                "- recomienda: quien escribió el mensaje, tal como aparece en el chat.\n"
+                "- rubro: uno de esta lista, escrito igual: Albañil, Carpintero, Cerrajero, Electricista, Gasista matriculado, Mantenimiento general, Pintor, Plomero, Técnico de aire acondicionado, Técnico de calderas, Técnico de electrodomésticos, Fumigador, Herrero, Jardinero, Lavado de autos, Limpiavidrios, Paisajista, Piletero, Techista, Empleada doméstica, Limpieza, Niñera, Paseador de perros, Profesor particular, Veterinario, Animación infantil, Catering, DJ, Fotógrafo, Salón de eventos, Otros."
+            )
+        if ex_r1[1].button("🏫 Escuela / Padres"):
             st.session_state["search_query_input"] = "Extrae todas las reuniones de padres, eventos escolares, fechas límite, cuotas o pagos informados con fechas y detalles"
-        if ex_r1[1].button("🏢 Consorcio / Edificio"):
+        if ex_r1[2].button("🏢 Consorcio / Edificio"):
             st.session_state["search_query_input"] = "Busca todos los reclamos de mantenimiento, humedad, cortes de agua/luz, ruidos molestos y asambleas con fecha y depto"
-        if ex_r1[2].button("💼 Trabajo y Proyectos"):
-            st.session_state["search_query_input"] = "Extrae las decisiones clave tomadas, acuerdos alcanzados, links de documentos y tareas asignadas con responsables"
 
         ex_r2 = st.columns(3)
-        if ex_r2[0].button("🍖 Asado / Evento"):
+        if ex_r2[0].button("💼 Trabajo y Proyectos"):
+            st.session_state["search_query_input"] = "Extrae las decisiones clave tomadas, acuerdos alcanzados, links de documentos y tareas asignadas con responsables"
+        if ex_r2[1].button("🍖 Asado / Evento"):
             st.session_state["search_query_input"] = "Lista quiénes confirmaron que van, qué comida o bebida se comprometió a llevar cada uno y montos de dinero recaudados"
-        if ex_r2[1].button("🛍️ Compra y Venta"):
+        if ex_r2[2].button("🛍️ Compra y Venta"):
             st.session_state["search_query_input"] = "Extrae todos los productos ofrecidos a la venta (autos, muebles, electrodomésticos, etc.) con precio y contacto"
-        if ex_r2[2].button("🍕 Comida y Delivery"):
-            st.session_state["search_query_input"] = "Extrae todas las personas o comercios que venden comida casera, viandas, empanadas, postres o delivery, con precios y contacto"
 
         chats_disponibles_u = [info["Chat / Grupo"] for info in loaded_chats_info]
         if len(chats_disponibles_u) > 1:
@@ -263,7 +270,7 @@ else:
                 result = extractor.extract_dynamic_query_batched(
                     selected_slice,
                     query,
-                    chunk_size=350,
+                    chunk_size=200,
                     progress_callback=update_progress_u
                 )
 
@@ -327,7 +334,7 @@ else:
             "Extrae profesionales con el formato exacto de tu planilla: "
             "`nombre, apellido, rubro, telefono, barrio, motivo, avisado, notas` (y chat de origen si hay varios)."
         )
-        st.info("💡 **Procesamiento inteligente por lotes activado**: OjoAlChat analiza todos los chats en bloques automáticos de 700 mensajes para sortear el límite de respuesta de Gemini. Si un profesional aparece en varios chats o mensajes, se unifican sus datos y elogios automáticamente.")
+        st.info("💡 **Procesamiento inteligente por lotes activado**: OjoAlChat analiza todos los chats en bloques automáticos de 200 mensajes para sortear cualquier límite de salida y acelerar el tiempo de respuesta. Si un profesional aparece en varios chats o mensajes, se unifican sus datos y elogios automáticamente.")
 
         chats_disponibles = [info["Chat / Grupo"] for info in loaded_chats_info]
         if len(chats_disponibles) > 1:
@@ -376,7 +383,7 @@ else:
                 extractor = WhatsAppInsightExtractor(api_key=api_key, model=model_choice)
                 results_raw = extractor.extract_recommendations_batched(
                     selected_slice,
-                    chunk_size=350,
+                    chunk_size=200,
                     deduplicate=False,
                     progress_callback=update_progress_r
                 )

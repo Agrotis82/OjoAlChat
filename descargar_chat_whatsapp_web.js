@@ -4,16 +4,16 @@
  * ====================================================================
  * 
  * NOVEDADES:
- * - Detecta AUTOMÁTICAMENTE el NOMBRE DEL GRUPO o contacto y lo incluye en el archivo.
- * - Rango de fechas con calendario (Desde / Hasta) y botones rápidos (1 mes, 3 meses, Todo).
- * - AUTO-STOP: Se detiene y descarga automáticamente cuando llega a la fecha solicitada.
- * - Limpieza de caracteres no válidos para el nombre de archivo en Windows/Mac.
+ * - Corrige la detección para tomar SIEMPRE el NOMBRE DEL GRUPO (no la lista de integrantes).
+ * - Campo editable en el panel para ver y cambiar el nombre del archivo si se desea.
+ * - Incluye la CANTIDAD DE MENSAJES en el nombre del archivo (ej: chat_Vecinas_Molineras_254msgs_...).
+ * - Rango de fechas y parada automática (Auto-stop).
  * 
  * INSTRUCCIONES:
  * 1. Abre WhatsApp Web (web.whatsapp.com) y entra al grupo/chat.
  * 2. Presiona F12 > pestaña Consola (Console).
  * 3. Pega este código y presiona Enter.
- * 4. Elige las fechas en la ventana flotante y haz clic en "▶ Iniciar Extracción Automática".
+ * 4. Verifica el nombre y fechas en el panel y haz clic en "▶ Iniciar Extracción Automática".
  */
 
 (function() {
@@ -28,34 +28,32 @@
         return;
     }
 
-    // 3. Detectar nombre del grupo o contacto
+    // 3. Detectar nombre del grupo (evitando la lista de integrantes)
     function getChatTitle() {
         const header = main.querySelector('header');
         if (!header) return 'chat';
-        const titleSpan = header.querySelector('span[title]') || 
-                          header.querySelector('div[role="button"] span') || 
-                          header.querySelector('h2');
-        let title = '';
-        if (titleSpan) {
-            title = titleSpan.getAttribute('title') || titleSpan.innerText || '';
+
+        // En WhatsApp Web, el header contiene un botón con la info del chat.
+        // La línea 0 es SIEMPRE el nombre del grupo. La línea 1 son los integrantes.
+        const infoBtn = header.querySelector('div[role="button"]') || header;
+        const lines = infoBtn.innerText.split('\n').map(l => l.trim()).filter(Boolean);
+
+        if (lines.length > 0) {
+            return lines[0];
         }
-        if (!title) {
-            const firstLine = header.innerText.split('\n')[0] || '';
-            title = firstLine.trim();
-        }
-        return title.trim() || 'chat';
+        return 'chat';
     }
 
     function sanitizeFilename(name) {
         return name
-            .replace(/[\/\\?%*:|"<>]/g, '')   // Quitar caracteres prohibidos en Windows
+            .replace(/[\/\\?%*:|"<>]/g, '')   // Quitar caracteres no permitidos en archivos
             .replace(/\s+/g, '_')             // Reemplazar espacios por guiones bajos
             .replace(/_+/g, '_')              // Evitar guiones dobles
             .slice(0, 40);                    // Limitar largo
     }
 
-    const rawChatName = getChatTitle();
-    const cleanChatName = sanitizeFilename(rawChatName);
+    const detectedTitle = getChatTitle();
+    const cleanInitialName = sanitizeFilename(detectedTitle);
 
     // 4. Buscar contenedor con scroll
     function getScrollContainer() {
@@ -108,9 +106,9 @@
             <button id="ojo-btn-close" style="background:none; border:none; color:#8696a0; cursor:pointer; font-size:16px;">✖</button>
         </div>
 
-        <div style="background:#182229; padding:6px 10px; border-radius:6px; margin-bottom:10px; border:1px solid #222e35;">
-            <span style="color:#8696a0; font-size:11px;">Grupo / Chat detectado:</span>
-            <div style="font-weight:bold; color:#53bdeb; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${rawChatName}</div>
+        <div style="margin-bottom:10px;">
+            <label style="display:block; font-size:11px; color:#8696a0; margin-bottom:3px;">📁 Nombre del grupo para el archivo:</label>
+            <input type="text" id="ojo-chat-name" value="${cleanInitialName}" style="width:100%; background:#202c33; color:#53bdeb; font-weight:bold; border:1px solid #2a3942; border-radius:6px; padding:6px 8px; box-sizing:border-box;">
         </div>
 
         <div style="margin-bottom:8px;">
@@ -193,7 +191,7 @@
             document.getElementById('ojo-oldest-date').innerText = oldestDateFound.toLocaleDateString();
         }
 
-        // Chequear si se detuvo el scroll (fin de historial)
+        // Detectar si terminó de cargar historial
         if (messagesMap.size === lastMessagesTotal) {
             consecutiveSameCount++;
         } else {
@@ -201,7 +199,7 @@
             lastMessagesTotal = messagesMap.size;
         }
 
-        // Condición 1: Llegó a la fecha límite hacia atrás
+        // Condición 1: Llegó a la fecha límite
         if (targetFromDate && oldestDateFound && oldestDateFound <= targetFromDate) {
             finishAndDownload(targetFromDate, targetToDate, "¡Fecha alcanzada!");
             return;
@@ -225,9 +223,8 @@
     function finishAndDownload(fromDate, toDate, reason) {
         clearInterval(timer);
         timer = null;
-        document.getElementById('ojo-status').innerText = `✔️ ${reason} Descargando...`;
-        document.getElementById('ojo-status').style.color = '#25d366';
 
+        // Filtrar mensajes dentro del rango solicitado
         const filtered = [];
         messagesMap.forEach(item => {
             if (!item.date) {
@@ -245,9 +242,17 @@
             return;
         }
 
+        document.getElementById('ojo-status').innerText = `✔️ ${reason} (${filtered.length} mensajes). Descargando...`;
+        document.getElementById('ojo-status').style.color = '#25d366';
+
+        // Nombre del archivo personalizado: chat_[Grupo]_[Cant]msgs_[Desde]_a_[Hasta].txt
+        const inputName = document.getElementById('ojo-chat-name').value;
+        const finalGroupName = sanitizeFilename(inputName || cleanInitialName || 'grupo');
         const fromStr = fromDate ? fromDate.toISOString().slice(0,10) : 'inicio';
         const toStr = toDate ? toDate.toISOString().slice(0,10) : 'hoy';
-        const finalFilename = `chat_${cleanChatName}_${fromStr}_a_${toStr}.txt`;
+        
+        // Incluye la cantidad de mensajes
+        const finalFilename = `chat_${finalGroupName}_${filtered.length}msgs_${fromStr}_a_${toStr}.txt`;
 
         const blob = new Blob([filtered.join('\n\n')], { type: 'text/plain;charset=utf-8' });
         const a = document.createElement('a');
@@ -305,7 +310,7 @@
         const toVal = document.getElementById('ojo-date-to').value;
         const fromDate = fromVal ? new Date(fromVal + "T00:00:00") : null;
         const toDate = toVal ? new Date(toVal + "T23:59:59") : null;
-        finishAndDownload(fromDate, toDate, "Descarga manual.");
+        finishAndDownload(fromDate, toDate, "Descarga manual");
     };
 
     // Cerrar

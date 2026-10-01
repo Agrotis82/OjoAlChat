@@ -176,6 +176,21 @@ else:
     col3.metric("Participantes", len(senders))
     col4.metric("Rango de Fechas", f"{messages[0].date} ➔ {messages[-1].date}" if messages else "-")
 
+    # Chats bajados con el script viejo: el contacto compartido queda sin número y la IA confunde
+    # a la vecina que lo compartió con el proveedor.
+    old_format = [
+        m for m in messages
+        if "[CONTACTO:" not in m.text and re.search(r"^(Mensaje|Guardar contacto|Ver la empresa)$", m.text, re.M)
+    ]
+    if old_format:
+        chats_viejos = sorted(set(m.source_chat for m in old_format))
+        st.warning(
+            f"⚠️ {len(old_format)} contactos compartidos vienen sin número en: {', '.join(chats_viejos)}. "
+            "Estos chats se bajaron con la versión vieja del script: la IA puede tomar a la vecina que compartió "
+            "el contacto como si fuera el proveedor. Bajalos de nuevo con el script actual (en el panel tiene que "
+            "aparecer 'Contactos compartidos')."
+        )
+
     if len(loaded_chats_info) > 1:
         with st.expander("📁 Detalle de los chats unificados", expanded=False):
             st.dataframe(pd.DataFrame(loaded_chats_info), use_container_width=True, hide_index=True)

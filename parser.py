@@ -126,4 +126,29 @@ class WhatsAppParser:
             if not self.is_system_message(m.text) and m.text.strip()
         ]
 
+        # El script de WhatsApp Web guarda los mensajes por pantallas, de la más nueva a la más vieja.
+        # Ordenarlos por fecha y hora deja cada pregunta junto a sus respuestas. El orden es estable:
+        # los mensajes del mismo minuto quedan como venían.
+        clean_messages.sort(key=message_sort_key)
         return clean_messages
+
+
+def message_sort_key(m: "ChatMessage"):
+    """(año, mes, día, minuto del día) a partir de '29/9/2026' y '2:49 p. m.' o '14:49:10'."""
+    fecha = re.match(r"(\d{1,2})[/.-](\d{1,2})[/.-](\d{2,4})", m.date or "")
+    if not fecha:
+        return (9999, 0, 0, 0)
+    dia, mes, anio = (int(x) for x in fecha.groups())
+    if anio < 100:
+        anio += 2000
+    hora = re.match(r"(\d{1,2}):(\d{2})", m.time or "")
+    minutos = 0
+    if hora:
+        h, mi = int(hora.group(1)), int(hora.group(2))
+        t = (m.time or "").lower().replace(" ", "").replace(".", "")
+        if "pm" in t and h != 12:
+            h += 12
+        elif "am" in t and h == 12:
+            h = 0
+        minutos = h * 60 + mi
+    return (anio, mes, dia, minutos)

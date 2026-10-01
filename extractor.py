@@ -202,6 +202,36 @@ REGLA_TELEFONOS = (
 )
 
 
+MENSAJES_DE_CONTEXTO = 25
+
+REGLA_REMITENTE = (
+    "Quien escribe en el chat (el remitente, antes de los dos puntos) es un vecino, no un proveedor, salvo que "
+    "el mensaje diga que ofrece ese servicio. No lo pongas como proveedor por compartir un contacto o recomendar a alguien.\n"
+)
+
+REGLA_CONTEXTO = (
+    "Si el historial empieza con una sección 'CONTEXTO', son los mensajes anteriores al tramo: usala solo "
+    "para entender a qué pregunta responde un mensaje. Extraé filas SOLO de la sección 'MENSAJES A ANALIZAR'.\n"
+)
+
+
+def _formatear(m: Any) -> str:
+    return m.to_formatted_str() if hasattr(m, "to_formatted_str") else str(m)
+
+
+def armar_texto_lote(mensajes: List[Any], inicio: int, lote: List[Any]) -> str:
+    """
+    El tramo a analizar, precedido por los mensajes anteriores como contexto. Sin eso, una respuesta
+    ("te paso el de Martín") que cae al principio de un tramo pierde la pregunta que la explica.
+    """
+    previos = mensajes[max(0, inicio - MENSAJES_DE_CONTEXTO):inicio]
+    texto = "\n".join(_formatear(m) for m in lote)
+    if not previos:
+        return texto
+    contexto = "\n".join(_formatear(m) for m in previos)
+    return f"### CONTEXTO (no extraer filas de acá)\n{contexto}\n\n### MENSAJES A ANALIZAR\n{texto}"
+
+
 def _cola_digitos(valor: Any) -> str:
     """Últimos 8 dígitos de un teléfono, para comparar sin importar el formato."""
     digitos = re.sub(r"\D", "", str(valor or ""))
@@ -467,7 +497,7 @@ class WhatsAppInsightExtractor:
             "Eres un analista experto en extraer recomendaciones de servicios y personas a partir de chats de WhatsApp.\n"
             "Tu objetivo es encontrar TODAS las personas, profesionales, tecnicos o comercios recomendados en la conversacion.\n"
             "Presta especial atencion a pedidos de recomendacion y sus respuestas, y contactos compartidos.\n\n"
-            + REGLA_TELEFONOS + "\n"
+            + REGLA_TELEFONOS + REGLA_CONTEXTO + REGLA_REMITENTE + "\n"
             "Debes responder en formato JSON con la siguiente estructura:\n"
             "{\n"
             '  "recomendados": [\n'
@@ -517,7 +547,9 @@ class WhatsAppInsightExtractor:
             "4. En 'respuesta_directa', redacta un resumen claro en español de lo que encontraste (quiénes, qué dijeron, acuerdos o recomendaciones).\n"
             "5. En 'filas', agrega todas las ocurrencias o filas encontradas que cumplan con la solicitud del usuario.\n"
             "6. Si no hay ocurrencias que cumplan los criterios en estos mensajes, devuelve 'filas': [] y en 'respuesta_directa' aclara brevemente que no hubo menciones.\n"
-            "7. " + REGLA_TELEFONOS + "\n"
+            "7. " + REGLA_TELEFONOS +
+            "8. " + REGLA_CONTEXTO +
+            "9. " + REGLA_REMITENTE + "\n"
             "Responde en formato JSON con la siguiente estructura (o directamente un array de objetos JSON con las columnas solicitadas):\n"
             "{\n"
             '  "respuesta_directa": "Resumen de lo encontrado...",\n'
@@ -574,10 +606,7 @@ class WhatsAppInsightExtractor:
                     curr_model
                 )
 
-            chunk_text = "\n".join([
-                m.to_formatted_str() if hasattr(m, "to_formatted_str") else str(m)
-                for m in chunk
-            ])
+            chunk_text = armar_texto_lote(messages, idx * chunk_size, chunk)
 
             # Detectar si el lote proviene de un chat específico para completar chat_origen si falta
             chunk_chats = set(getattr(m, "source_chat", "") for m in chunk if getattr(m, "source_chat", ""))
@@ -646,11 +675,14 @@ class WhatsAppInsightExtractor:
             data_context = "Puntos clave detectados en las conversaciones:\n" + "\n".join([f"- {s}" for s in partial_summaries[:15]])
 
         prompt = (
-            "Eres un analista de datos y comunicación corporativa experto.\n"
+            "Vas a resumir datos extraídos de chats de WhatsApp de un barrio.\n"
             f"El usuario solicitó buscar en sus chats de WhatsApp lo siguiente:\n\"{user_query}\"\n\n"
             f"DATOS EXTRAÍDOS DE TODAS LAS CONVERSACIONES:\n{data_context}\n\n"
             "INSTRUCCIONES CRÍTICAS:\n"
-            "1. Redacta una conclusión y respuesta ejecutiva ÚNICA, FLUIDA, CLARA Y ELEGANTE (en español).\n"
+            "1. Redacta un resumen ÚNICO, claro y breve en español rioplatense. No te presentes ni hables de vos.\n"
+            "1b. Usá SOLO lo que dicen los datos. No agregues valoraciones, adjetivos ni conclusiones que no estén en las filas "
+            "(por ejemplo 'confiable', 'calificados', 'reconocidos por su rapidez'). Si un dato no está, no lo supongas.\n"
+            "1c. Dá el total exacto de registros que figura arriba.\n"
             "2. NUNCA menciones lotes, ni 'Lote 1', ni repitas frases de apertura como 'Se encontraron...', 'Se analizaron los mensajes...' de manera fragmentada.\n"
             "3. Estructura la respuesta con un breve balance general y luego viñetas agrupadas por rubro, categoría o tema principal.\n"
             "4. Menciona con nombre y apellido a los profesionales, contactos o datos clave más destacados.\n"
@@ -715,10 +747,7 @@ class WhatsAppInsightExtractor:
                     curr_model
                 )
 
-            chunk_text = "\n".join([
-                m.to_formatted_str() if hasattr(m, "to_formatted_str") else str(m)
-                for m in chunk
-            ])
+            chunk_text = armar_texto_lote(messages, idx * chunk_size, chunk)
 
             chunk_chats = set(getattr(m, "source_chat", "") for m in chunk if getattr(m, "source_chat", ""))
             default_chat = list(chunk_chats)[0] if len(chunk_chats) == 1 else ""

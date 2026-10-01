@@ -56,9 +56,9 @@ with st.sidebar:
     
     model_choice = st.selectbox(
         "Modelo de IA",
-        ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash", "gemini-3.8-flash"],
+        ["gemini-2.0-flash", "gemini-2.5-flash", "gemini-1.5-flash"],
         index=0,
-        help="gemini-2.5-flash es el modelo más estable y recomendado con la mayor disponibilidad en Google."
+        help="gemini-2.0-flash es ultra rápido y recomendado para procesar chats en segundos."
     )
     
     st.divider()
@@ -254,16 +254,16 @@ else:
                 prog_bar_u = st.progress(0, text="Iniciando búsqueda inteligente...")
                 status_box_u = st.empty()
 
-                def update_progress_u(curr, total, count, msg):
-                    pct = int((curr / total) * 100)
-                    prog_bar_u.progress(min(pct, 100), text=f"Lote {curr} de {total} ({pct}%)")
+                def update_progress_u(step, total, pct, count, msg):
+                    current_lote = min(step + 1, total) if pct < 100 else total
+                    prog_bar_u.progress(min(pct, 100), text=f"Progreso: {pct}% — Lote {current_lote} de {total}")
                     status_box_u.info(f"⏳ {msg} | Registros detectados hasta ahora: **{count}**")
 
                 extractor = WhatsAppInsightExtractor(api_key=api_key, model=model_choice)
                 result = extractor.extract_dynamic_query_batched(
                     selected_slice,
                     query,
-                    chunk_size=800,
+                    chunk_size=350,
                     progress_callback=update_progress_u
                 )
 
@@ -368,15 +368,15 @@ else:
                 prog_bar_r = st.progress(0, text="Iniciando extracción inteligente en lotes...")
                 status_box_r = st.empty()
 
-                def update_progress_r(curr, total, count, msg):
-                    pct = int((curr / total) * 100)
-                    prog_bar_r.progress(min(pct, 100), text=f"Lote {curr} de {total} ({pct}%)")
+                def update_progress_r(step, total, pct, count, msg):
+                    current_lote = min(step + 1, total) if pct < 100 else total
+                    prog_bar_r.progress(min(pct, 100), text=f"Progreso: {pct}% — Lote {current_lote} de {total}")
                     status_box_r.info(f"⏳ {msg} | Menciones detectadas hasta el momento: **{count}**")
 
                 extractor = WhatsAppInsightExtractor(api_key=api_key, model=model_choice)
                 results_raw = extractor.extract_recommendations_batched(
                     selected_slice,
-                    chunk_size=700,
+                    chunk_size=350,
                     deduplicate=False,
                     progress_callback=update_progress_r
                 )

@@ -118,17 +118,19 @@ def deduplicate_recommendations(items: List[Dict[str, Any]]) -> List[Dict[str, A
     return list(merged_map.values())
 
 class WhatsAppInsightExtractor:
-    def __init__(self, api_key: Optional[str] = None, model: str = "gemini-2.5-flash"):
+    def __init__(self, api_key: Optional[str] = None, model: str = "gemini-2.0-flash"):
         self.api_key = api_key or os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
         if not self.api_key:
             raise ValueError("No se encontro una API Key de Gemini. Por favor configurala en la app o en las variables de entorno.")
-        self.client = genai.Client(api_key=self.api_key)
-        self.model = model
+        self.client = genai.Client(
+            api_key=self.api_key,
+            http_options=types.HttpOptions(timeout=35000)
+        )
+        self.model = model or "gemini-2.0-flash"
 
     def _generate_with_retry(self, contents: str, config: types.GenerateContentConfig, max_retries: int = 3) -> Any:
         candidate_models = [self.model]
-        # Cascada de modelos estables de respaldo si el principal experimenta saturación (503 / 429)
-        fallbacks = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash", "gemini-3.8-flash"]
+        fallbacks = ["gemini-2.0-flash", "gemini-2.5-flash", "gemini-1.5-flash"]
         for fb in fallbacks:
             if fb not in candidate_models:
                 candidate_models.append(fb)
@@ -137,21 +139,28 @@ class WhatsAppInsightExtractor:
         for model_name in candidate_models:
             for attempt in range(max_retries):
                 try:
+                    # Clonar config para evitar mutar el original
+                    call_config = config.model_copy() if hasattr(config, "model_copy") else config
+                    # Desactivar 'thinking' en 2.5 para eliminar la latencia de razonamiento (de 2 min a 3 seg)
+                    if "2.5" in model_name:
+                        call_config.thinking_config = types.ThinkingConfig(thinking_budget=0)
+                    else:
+                        call_config.thinking_config = None
+
                     response = self.client.models.generate_content(
                         model=model_name,
                         contents=contents,
-                        config=config,
+                        config=call_config,
                     )
                     return response
                 except Exception as e:
                     last_error = e
                     err_msg = str(e).lower()
-                    # Si es error transitorio (503 Unavailable, 429 Rate Limit, High demand)
-                    if any(term in err_msg for term in ["503", "429", "unavailable", "high demand", "capacity", "temporary"]):
-                        wait_sec = (attempt + 1) * 2 + random.uniform(0.5, 1.5)
+                    if any(term in err_msg for term in ["503", "429", "unavailable", "high demand", "capacity", "temporary", "timeout", "deadline"]):
+                        wait_sec = (attempt + 1) * 1.5 + random.uniform(0.3, 0.8)
                         time.sleep(wait_sec)
                     else:
-                        # Error no transitorio (ej: schema no soportado), pasar al siguiente intento o fallback
+                        # Si es error no transitorio (ej: modelo no soportado en esta cuenta), pasar directo al fallback
                         break
         raise last_error
 
@@ -234,16 +243,13 @@ class WhatsAppInsightExtractor:
     def extract_recommendations_batched(
         self,
         messages: List[Any],
-        chunk_size: int = 700,
+        chunk_size: int = 350,
         deduplicate: bool = True,
         progress_callback: Optional[Any] = None
     ) -> List[Dict[str, Any]]:
         """
-        Procesa los mensajes en lotes de tamaño `chunk_size` para sortear el límite
-        de tokens de salida de los LLMs (~4k-8k tokens en JSON) y asegurar la extracción
-        del 100% de los contactos recomendados sin truncamiento.
-        
-        Si `deduplicate=False`, devuelve cada mención por separado sin fusionar.
+        Procesa los mensajes en lotes de tamaño `chunk_size` (350 por defecto) para
+        garantizar respuestas rápidas (~3s por lote) sin saturar límites de tokens de salida.
         """
         if not messages:
             return []
@@ -256,12 +262,14 @@ class WhatsAppInsightExtractor:
 
         for idx, chunk in enumerate(chunks):
             chunk_num = idx + 1
+            pct_start = int((idx / total_chunks) * 100)
             if progress_callback:
                 progress_callback(
-                    chunk_num,
+                    idx,
                     total_chunks,
+                    pct_start,
                     len(all_recommendations),
-                    f"Procesando lote {chunk_num} de {total_chunks} ({len(chunk)} mensajes)..."
+                    f"Analizando lote {chunk_num} de {total_chunks} ({len(chunk)} mensajes)..."
                 )
 
             chunk_text = "\n".join([
@@ -283,12 +291,14 @@ class WhatsAppInsightExtractor:
             except Exception as e:
                 print(f"[Aviso] Error procesando lote {chunk_num}/{total_chunks}: {e}")
 
+            pct_end = int((chunk_num / total_chunks) * 100)
             if progress_callback:
                 progress_callback(
                     chunk_num,
                     total_chunks,
+                    pct_end,
                     len(all_recommendations),
-                    f"Lote {chunk_num}/{total_chunks} finalizado. {len(all_recommendations)} menciones detectadas."
+                    f"Lote {chunk_num} de {total_chunks} completado."
                 )
 
         if deduplicate:
@@ -299,12 +309,12 @@ class WhatsAppInsightExtractor:
         self,
         messages: List[Any],
         user_query: str,
-        chunk_size: int = 800,
+        chunk_size: int = 350,
         progress_callback: Optional[Any] = None
     ) -> Dict[str, Any]:
         """
-        Procesa una consulta universal en lotes para abarcar todo el historial
-        sin exceder la ventana de tokens de salida.
+        Procesa una consulta universal en lotes ágiles de 350 mensajes para
+        garantizar velocidad, respuesta continua y sin timeouts.
         """
         if not messages:
             return {
@@ -323,12 +333,14 @@ class WhatsAppInsightExtractor:
 
         for idx, chunk in enumerate(chunks):
             chunk_num = idx + 1
+            pct_start = int((idx / total_chunks) * 100)
             if progress_callback:
                 progress_callback(
-                    chunk_num,
+                    idx,
                     total_chunks,
+                    pct_start,
                     len(all_filas),
-                    f"Analizando lote {chunk_num} de {total_chunks}..."
+                    f"Analizando lote {chunk_num} de {total_chunks} ({len(chunk)} mensajes)..."
                 )
 
             chunk_text = "\n".join([
@@ -356,6 +368,16 @@ class WhatsAppInsightExtractor:
                     all_filas.extend(filas)
             except Exception as e:
                 print(f"[Aviso] Error en consulta dinámica lote {chunk_num}: {e}")
+
+            pct_end = int((chunk_num / total_chunks) * 100)
+            if progress_callback:
+                progress_callback(
+                    chunk_num,
+                    total_chunks,
+                    pct_end,
+                    len(all_filas),
+                    f"Lote {chunk_num} de {total_chunks} completado."
+                )
 
         # Sintetizar respuesta directa
         if respuestas_parciales:

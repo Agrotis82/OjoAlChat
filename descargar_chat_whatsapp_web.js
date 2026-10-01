@@ -4,12 +4,11 @@
  * ====================================================================
  * 
  * NOVEDADES:
- * - SOLUCIONADO BLOQUEO DE DESCARGA: Chrome a veces bloquea descargas automáticas
- *   generadas desde temporizadores (setInterval). Ahora, además de intentar la descarga
- *   automática, muestra un BOTÓN VERDE GRANDE DIRECTO "📥 DESCARGAR ARCHIVO (X msgs)"
- *   y un botón para copiar al portapapeles.
- * - Limpieza de tildes y caracteres especiales en el nombre del archivo (ej. Trébol -> Trebol).
- * - Soporte multi-chat continuo sin recargar la página.
+ * - BOTÓN DE DESCARGA INFALIBLE: Usa la API nativa de guardado de Windows (showSaveFilePicker)
+ *   o enlaces directos con eventos aislados (stopPropagation) para que WhatsApp Web NO bloquee el clic.
+ * - Copia directa al portapapeles y visualizador de texto en el panel.
+ * - Limpieza de nombres sin tildes ni caracteres inválidos para Windows.
+ * - Extracción multi-chat continua sin recargar la página.
  */
 
 (function() {
@@ -129,10 +128,17 @@
             <button id="ojo-btn-stop" style="background:#374248; color:#e9edef; border:none; padding:8px; border-radius:8px; cursor:pointer; font-size:12px; display:none;">⏹ Detener y Descargar ahora</button>
         </div>
 
-        <!-- Contenedor para descarga directa en caso de bloqueo de navegador -->
+        <!-- Contenedor infalible para descarga y guardado directo -->
         <div id="ojo-download-ready-box" style="display:none; margin-top:10px; flex-direction:column; gap:6px;">
-            <a id="ojo-link-download" style="display:block; text-align:center; text-decoration:none; background:#25d366; color:#111b21; padding:10px; border-radius:8px; font-weight:bold; font-size:13px; box-shadow:0 4px 12px rgba(37,211,102,0.3); cursor:pointer;">📥 DESCARGAR ARCHIVO AHORA</a>
-            <button id="ojo-btn-copy" style="background:#202c33; color:#53bdeb; border:1px solid #2a3942; padding:7px; border-radius:8px; cursor:pointer; font-size:11px;">📋 Copiar mensajes al portapapeles</button>
+            <button id="ojo-btn-download" style="width:100%; background:#25d366; color:#111b21; border:none; padding:12px 10px; border-radius:8px; font-weight:bold; cursor:pointer; font-size:13px; box-shadow:0 4px 14px rgba(37,211,102,0.4); text-transform:uppercase; letter-spacing:0.5px;">📥 Guardar Archivo en mi PC</button>
+            <div style="display:flex; gap:6px;">
+                <button id="ojo-btn-copy" style="flex:1; background:#202c33; color:#53bdeb; border:1px solid #2a3942; padding:7px; border-radius:8px; cursor:pointer; font-size:11px; font-weight:bold;">📋 Copiar Todo</button>
+                <button id="ojo-btn-view" style="flex:1; background:#202c33; color:#ffd279; border:1px solid #2a3942; padding:7px; border-radius:8px; cursor:pointer; font-size:11px; font-weight:bold;">👁️ Ver Texto</button>
+            </div>
+            <div id="ojo-preview-box" style="display:none; margin-top:4px;">
+                <textarea id="ojo-preview-textarea" style="width:100%; height:110px; background:#111b21; color:#e9edef; border:1px solid #2a3942; border-radius:6px; font-size:10px; padding:6px; box-sizing:border-box; resize:vertical; font-family:monospace;"></textarea>
+                <div style="font-size:10px; color:#8696a0; margin-top:2px;">Tip: Puedes seleccionar todo este texto y guardarlo en el Bloc de Notas.</div>
+            </div>
         </div>
     `;
 
@@ -144,8 +150,8 @@
     let consecutiveSameCount = 0;
     let lastMessagesTotal = 0;
     let isExtracting = false;
-    let lastBlobUrl = null;
     let lastExportedText = '';
+    let lastFilename = '';
 
     function parseMessageDate(preText) {
         if (!preText) return null;
@@ -174,18 +180,22 @@
         oldestDateFound = null;
         consecutiveSameCount = 0;
         lastMessagesTotal = 0;
+        lastExportedText = '';
         document.getElementById('ojo-count').innerText = '0';
         document.getElementById('ojo-oldest-date').innerText = '-';
         document.getElementById('ojo-status').innerText = statusMsg;
         document.getElementById('ojo-status').style.color = '#53bdeb';
         document.getElementById('ojo-download-ready-box').style.display = 'none';
+        document.getElementById('ojo-preview-box').style.display = 'none';
         document.getElementById('ojo-btn-start').style.display = 'block';
         document.getElementById('ojo-btn-stop').style.display = 'none';
     }
 
     const chatWatcher = setInterval(checkActiveChatChange, 1000);
 
-    document.getElementById('ojo-btn-refresh-chat').onclick = () => {
+    document.getElementById('ojo-btn-refresh-chat').onclick = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
         checkActiveChatChange();
         resetCounters(`Chat actualizado: ${currentChatTitle}`);
     };
@@ -281,75 +291,198 @@
         const fromStr = fromDate ? fromDate.toISOString().slice(0,10) : 'inicio';
         const toStr = toDate ? toDate.toISOString().slice(0,10) : 'hoy';
         
-        const finalFilename = `chat_${finalGroupName}_${filtered.length}msgs_${fromStr}_a_${toStr}.txt`;
+        lastFilename = `chat_${finalGroupName}_${filtered.length}msgs_${fromStr}_a_${toStr}.txt`;
         lastExportedText = filtered.join('\n\n');
 
-        const blob = new Blob([lastExportedText], { type: 'text/plain;charset=utf-8' });
-        if (lastBlobUrl) URL.revokeObjectURL(lastBlobUrl);
-        lastBlobUrl = URL.createObjectURL(blob);
-
-        // 1. Configurar botón de descarga directa (infalible ante bloqueos del navegador)
-        const dlLink = document.getElementById('ojo-link-download');
-        dlLink.href = lastBlobUrl;
-        dlLink.download = finalFilename;
-        dlLink.innerText = `📥 DESCARGAR ARCHIVO (${filtered.length} msgs)`;
+        // Configurar botón de descarga
+        const btnDl = document.getElementById('ojo-btn-download');
+        btnDl.innerText = `📥 Guardar Archivo (${filtered.length} msgs)`;
         document.getElementById('ojo-download-ready-box').style.display = 'flex';
-
-        // 2. Intentar descarga automática
-        try {
-            const a = document.createElement('a');
-            a.href = lastBlobUrl;
-            a.download = finalFilename;
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-        } catch (e) {
-            console.log("Descarga automática bloqueada por el navegador, usa el botón directo.");
-        }
 
         document.getElementById('ojo-status').innerText = `✔️ ${reason} (${filtered.length} msgs listos)`;
         document.getElementById('ojo-status').style.color = '#25d366';
+
+        // Intento automático no invasivo en segundo plano
+        try {
+            const blob = new Blob([lastExportedText], { type: 'text/plain;charset=utf-8' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.style.display = 'none';
+            a.href = url;
+            a.download = lastFilename;
+            document.documentElement.appendChild(a);
+            a.click();
+            setTimeout(() => { a.remove(); URL.revokeObjectURL(url); }, 2000);
+        } catch (e) {}
 
         document.getElementById('ojo-btn-start').style.display = 'block';
         document.getElementById('ojo-btn-start').innerText = '▶ Extraer otro chat o rango';
         document.getElementById('ojo-btn-stop').style.display = 'none';
     }
 
-    // Copiar al portapapeles como respaldo
-    document.getElementById('ojo-btn-copy').onclick = () => {
-        if (lastExportedText) {
-            navigator.clipboard.writeText(lastExportedText).then(() => {
-                alert("¡Texto copiado al portapapeles con éxito!");
-            }).catch(() => {
-                const ta = document.createElement('textarea');
-                ta.value = lastExportedText;
-                document.body.appendChild(ta);
-                ta.select();
-                document.execCommand('copy');
-                document.body.removeChild(ta);
-                alert("¡Texto copiado al portapapeles!");
-            });
+    // Función infalible de guardado de archivo
+    async function executeSave(text, filename) {
+        if (!text) {
+            alert("No hay mensajes disponibles para guardar.");
+            return;
         }
+
+        // Método 1: Ventana oficial de Windows "Guardar como..." (Chromium 86+)
+        if (window.showSaveFilePicker) {
+            try {
+                const handle = await window.showSaveFilePicker({
+                    suggestedName: filename,
+                    types: [{
+                        description: 'Archivo de texto (.txt)',
+                        accept: { 'text/plain': ['.txt'] }
+                    }]
+                });
+                const writable = await handle.createWritable();
+                await writable.write(text);
+                await writable.close();
+                document.getElementById('ojo-status').innerText = '✔️ ¡Archivo guardado con éxito!';
+                document.getElementById('ojo-status').style.color = '#25d366';
+                alert("¡Archivo guardado con éxito en tu computadora!");
+                return;
+            } catch (err) {
+                if (err.name === 'AbortError') return; // Cancelado por el usuario
+                console.warn('showSaveFilePicker no completado, probando descarga estándar...', err);
+            }
+        }
+
+        // Método 2: Descarga clásica por elemento 'a' con Blob
+        try {
+            const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.style.display = 'none';
+            a.href = url;
+            a.download = filename;
+            document.documentElement.appendChild(a);
+            a.click();
+            setTimeout(() => {
+                a.remove();
+                URL.revokeObjectURL(url);
+            }, 2000);
+            document.getElementById('ojo-status').innerText = '✔️ ¡Descarga iniciada!';
+            document.getElementById('ojo-status').style.color = '#25d366';
+            return;
+        } catch (err) {
+            console.warn('Blob falló:', err);
+        }
+
+        // Método 3: Descarga con Data URI
+        try {
+            const dataUri = 'data:text/plain;charset=utf-8,' + encodeURIComponent(text);
+            const a = document.createElement('a');
+            a.style.display = 'none';
+            a.href = dataUri;
+            a.download = filename;
+            document.documentElement.appendChild(a);
+            a.click();
+            setTimeout(() => a.remove(), 2000);
+            return;
+        } catch (err) {
+            console.warn('Data URI falló:', err);
+        }
+
+        // Método 4: Copia de emergencia y visor
+        copyToClipboard(text);
+        toggleTextView();
+        alert("El navegador bloqueó la descarga automática, pero el texto fue COPIADO AL PORTAPAPELES y se muestra abajo para que lo pegues en el Bloc de Notas.");
+    }
+
+    function copyToClipboard(text) {
+        if (!text) {
+            alert("No hay texto para copiar.");
+            return;
+        }
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).then(() => {
+                alert("✔️ ¡Texto copiado al portapapeles con éxito!");
+            }).catch(() => fallbackCopy(text));
+        } else {
+            fallbackCopy(text);
+        }
+    }
+
+    function fallbackCopy(text) {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.left = '-9999px';
+        document.body.appendChild(ta);
+        ta.select();
+        try {
+            document.execCommand('copy');
+            alert("✔️ ¡Texto copiado al portapapeles con éxito!");
+        } catch (e) {
+            toggleTextView();
+            alert("Selecciona el texto en la caja inferior y presiona Ctrl+C.");
+        }
+        document.body.removeChild(ta);
+    }
+
+    function toggleTextView() {
+        const box = document.getElementById('ojo-preview-box');
+        const ta = document.getElementById('ojo-preview-textarea');
+        if (box.style.display === 'none') {
+            box.style.display = 'block';
+            ta.value = lastExportedText;
+            ta.select();
+        } else {
+            box.style.display = 'none';
+        }
+    }
+
+    // Asignación de clics con stopPropagation para que WhatsApp Web NO los intercepte
+    document.getElementById('ojo-btn-download').onclick = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation();
+        executeSave(lastExportedText, lastFilename);
     };
 
-    // Botones rápidos
-    document.getElementById('ojo-quick-1m').onclick = () => {
+    document.getElementById('ojo-btn-copy').onclick = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation();
+        copyToClipboard(lastExportedText);
+    };
+
+    document.getElementById('ojo-btn-view').onclick = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation();
+        toggleTextView();
+    };
+
+    // Botones rápidos de rango de fechas
+    document.getElementById('ojo-quick-1m').onclick = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
         const d = new Date(); d.setDate(d.getDate() - 30);
         document.getElementById('ojo-date-from').value = formatDateInput(d);
         document.getElementById('ojo-date-to').value = formatDateInput(new Date());
     };
-    document.getElementById('ojo-quick-3m').onclick = () => {
+    document.getElementById('ojo-quick-3m').onclick = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
         const d = new Date(); d.setDate(d.getDate() - 90);
         document.getElementById('ojo-date-from').value = formatDateInput(d);
         document.getElementById('ojo-date-to').value = formatDateInput(new Date());
     };
-    document.getElementById('ojo-quick-all').onclick = () => {
+    document.getElementById('ojo-quick-all').onclick = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
         document.getElementById('ojo-date-from').value = "2020-01-01";
         document.getElementById('ojo-date-to').value = formatDateInput(new Date());
     };
 
     // Iniciar
-    document.getElementById('ojo-btn-start').onclick = () => {
+    document.getElementById('ojo-btn-start').onclick = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
         checkActiveChatChange();
         const scrollContainer = getScrollContainer();
         if (!scrollContainer) {
@@ -358,6 +491,7 @@
         }
 
         document.getElementById('ojo-download-ready-box').style.display = 'none';
+        document.getElementById('ojo-preview-box').style.display = 'none';
         messagesMap.clear();
         oldestDateFound = null;
         consecutiveSameCount = 0;
@@ -382,7 +516,9 @@
     };
 
     // Detener manual
-    document.getElementById('ojo-btn-stop').onclick = () => {
+    document.getElementById('ojo-btn-stop').onclick = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
         const fromVal = document.getElementById('ojo-date-from').value;
         const toVal = document.getElementById('ojo-date-to').value;
         const fromDate = fromVal ? new Date(fromVal + "T00:00:00") : null;
@@ -390,11 +526,16 @@
         finishAndDownload(fromDate, toDate, "Descarga manual");
     };
 
-    // Cerrar
-    document.getElementById('ojo-btn-close').onclick = () => {
+    // Cerrar panel
+    document.getElementById('ojo-btn-close').onclick = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
         clearInterval(chatWatcher);
         if (timer) clearInterval(timer);
-        if (lastBlobUrl) URL.revokeObjectURL(lastBlobUrl);
         panel.remove();
     };
+
+    // Funciones de emergencia accesibles desde la consola
+    window.descargarChat = () => executeSave(lastExportedText, lastFilename);
+    window.copiarChat = () => copyToClipboard(lastExportedText);
 })();

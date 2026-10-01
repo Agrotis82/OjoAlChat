@@ -36,6 +36,116 @@ def _clean_json_text(text: str) -> str:
         return match.group(1).strip()
     return text
 
+def _safe_json_loads(text: str) -> Any:
+    cleaned = _clean_json_text(text)
+    if not cleaned:
+        return {}
+    try:
+        return json.loads(cleaned)
+    except Exception:
+        # 1. Remover trailing commas en listas y objetos
+        fixed = re.sub(r',\s*([\]}])', r'\1', cleaned)
+        try:
+            return json.loads(fixed)
+        except Exception:
+            pass
+        # 2. Buscar primer bloque JSON balanceado
+        m = re.search(r'(\{[\s\S]*\}|\[[\s\S]*\])', cleaned)
+        if m:
+            cand = re.sub(r',\s*([\]}])', r'\1', m.group(1))
+            try:
+                return json.loads(cand)
+            except Exception:
+                pass
+        # 3. Reparar cierre truncado si hay un array de filas
+        if "[" in cleaned:
+            last_brace = cleaned.rfind("}")
+            if last_brace != -1:
+                cand = cleaned[:last_brace + 1] + "\n]}"
+                fixed_c = re.sub(r',\s*([\]}])', r'\1', cand)
+                try:
+                    return json.loads(fixed_c)
+                except Exception:
+                    pass
+        raise
+
+def build_rule_based_summary(user_query: str, all_filas: List[Dict[str, Any]], partial_summaries: List[str]) -> str:
+    """
+    Construye una síntesis consolidada, estructurada y limpia sin duplicaciones
+    cuando hay múltiples lotes de resultados.
+    """
+    if not all_filas and not partial_summaries:
+        return "No se encontraron registros ni menciones que coincidan con la búsqueda solicitada."
+
+    if not all_filas and partial_summaries:
+        unique_points = []
+        for s in partial_summaries:
+            cleaned = s.strip()
+            cleaned = re.sub(r'^(?:Se encontraron|Se extrajeron|Se analizaron los mensajes|Se identificaron|En el chat)\s*[^:]*:\s*', '', cleaned, flags=re.I)
+            if cleaned and cleaned not in unique_points:
+                unique_points.append(cleaned)
+        if unique_points:
+            lines = ["### 📋 Conclusiones Consolidadas de la Búsqueda:", ""]
+            for p in unique_points[:10]:
+                lines.append(f"- {p}")
+            return "\n".join(lines)
+        return partial_summaries[0]
+
+    sample = all_filas[0]
+    rubro_col = None
+    for k in sample.keys():
+        if any(term in k.lower() for term in ["rubro", "oficio", "servicio", "categoria", "tipo"]):
+            rubro_col = k
+            break
+
+    nombre_col = None
+    for k in sample.keys():
+        if any(term in k.lower() for term in ["nombre", "proveedor", "persona", "contacto"]):
+            nombre_col = k
+            break
+
+    total = len(all_filas)
+    lines = [
+        f"Se identificaron **{total} registros** en total a lo largo de las conversaciones analizadas.",
+        ""
+    ]
+
+    if rubro_col:
+        rubros_map: Dict[str, List[str]] = {}
+        for r in all_filas:
+            rb = str(r.get(rubro_col) or "Otros").strip()
+            if not rb:
+                rb = "Otros"
+            nm = str(r.get(nombre_col) or "").strip() if nombre_col else ""
+            if rb not in rubros_map:
+                rubros_map[rb] = []
+            if nm and nm not in rubros_map[rb]:
+                rubros_map[rb].append(nm)
+
+        lines.append("### 📌 Resumen por Rubro y Servicios Detectados:")
+        sorted_rubros = sorted(rubros_map.items(), key=lambda x: len(x[1]), reverse=True)
+        for rb, names in sorted_rubros:
+            if names:
+                ejemplos = ", ".join(names[:4])
+                extra = f" (y otros)" if len(names) > 4 else ""
+                lines.append(f"- **{rb}** ({len(names)} menciones): {ejemplos}{extra}")
+            else:
+                lines.append(f"- **{rb}**")
+        lines.append("")
+        lines.append("*(Consulta la tabla interactiva a continuación para ver todos los contactos, teléfonos, fechas y citas textuales).*")
+    else:
+        if nombre_col:
+            unique_names = list(dict.fromkeys([str(r.get(nombre_col)).strip() for r in all_filas if str(r.get(nombre_col)).strip()]))
+            if unique_names:
+                lines.append("### 📌 Principales Registros Detectados:")
+                ejemplos = ", ".join(unique_names[:10])
+                extra = f" (y {len(unique_names) - 10} más)" if len(unique_names) > 10 else ""
+                lines.append(f"- **Menciones destacadas:** {ejemplos}{extra}")
+                lines.append("")
+                lines.append("*(Consulta la tabla interactiva a continuación para explorar los detalles).*")
+
+    return "\n".join(lines)
+
 def normalize_dynamic_result(data: Any, default_chat: str = "") -> Dict[str, Any]:
     """
     Normaliza cualquier respuesta JSON devuelta por Gemini (lista directa de objetos,
@@ -341,7 +451,7 @@ class WhatsAppInsightExtractor:
                 response_schema=RecommendationBatch,
             )
             response, model_used = self._generate_with_retry(prompt, config)
-            data = json.loads(_clean_json_text(response.text))
+            data = _safe_json_loads(response.text)
             return data.get("recomendados", []), model_used
         except Exception:
             # Fallback sin response_schema estricto para evitar restricciones de Developer API
@@ -349,7 +459,7 @@ class WhatsAppInsightExtractor:
                 response_mime_type="application/json",
             )
             response, model_used = self._generate_with_retry(prompt, config)
-            data = json.loads(_clean_json_text(response.text))
+            data = _safe_json_loads(response.text)
             return data.get("recomendados", []), model_used
 
     def extract_dynamic_query(self, messages_text: str, user_query: str) -> Tuple[Any, str]:
@@ -383,7 +493,7 @@ class WhatsAppInsightExtractor:
             response_mime_type="application/json",
         )
         response, model_used = self._generate_with_retry(prompt, config)
-        return json.loads(_clean_json_text(response.text)), model_used
+        return _safe_json_loads(response.text), model_used
 
     def extract_recommendations_batched(
         self,
@@ -457,6 +567,63 @@ class WhatsAppInsightExtractor:
         if deduplicate:
             return deduplicate_recommendations(all_recommendations)
         return all_recommendations
+
+    def synthesize_executive_summary(
+        self,
+        user_query: str,
+        all_filas: List[Dict[str, Any]],
+        partial_summaries: List[str]
+    ) -> str:
+        """
+        Produce una conclusión ejecutiva consolidada, fluida y organizada
+        para evitar la repetición fragmentada de párrafos lote por lote.
+        """
+        if not all_filas and not partial_summaries:
+            return "No se encontraron datos que coincidan con la búsqueda."
+
+        # Construir contexto compacto para no exceder tokens ni demorar la respuesta
+        if all_filas:
+            first_row = all_filas[0]
+            display_keys = list(first_row.keys())[:7]
+            compact_filas = [
+                {k: row.get(k, "") for k in display_keys if row.get(k) is not None}
+                for row in all_filas[:60]
+            ]
+            data_context = (
+                f"Total de registros detectados: {len(all_filas)}\n"
+                f"Muestra de registros estructurados:\n"
+                f"{json.dumps(compact_filas, ensure_ascii=False, indent=1)}"
+            )
+            if len(all_filas) > 60:
+                data_context += f"\n... (y {len(all_filas) - 60} registros adicionales coincidentes)"
+        else:
+            data_context = "Puntos clave detectados en las conversaciones:\n" + "\n".join([f"- {s}" for s in partial_summaries[:15]])
+
+        prompt = (
+            "Eres un analista de datos y comunicación corporativa experto.\n"
+            f"El usuario solicitó buscar en sus chats de WhatsApp lo siguiente:\n\"{user_query}\"\n\n"
+            f"DATOS EXTRAÍDOS DE TODAS LAS CONVERSACIONES:\n{data_context}\n\n"
+            "INSTRUCCIONES CRÍTICAS:\n"
+            "1. Redacta una conclusión y respuesta ejecutiva ÚNICA, FLUIDA, CLARA Y ELEGANTE (en español).\n"
+            "2. NUNCA menciones lotes, ni 'Lote 1', ni repitas frases de apertura como 'Se encontraron...', 'Se analizaron los mensajes...' de manera fragmentada.\n"
+            "3. Estructura la respuesta con un breve balance general y luego viñetas agrupadas por rubro, categoría o tema principal.\n"
+            "4. Menciona con nombre y apellido a los profesionales, contactos o datos clave más destacados.\n"
+            "5. Responde con precisión a lo que el usuario preguntó y aclara que en la tabla inferior se pueden consultar todos los detalles, contactos y teléfonos.\n"
+            "6. Sé conciso pero exhaustivo, profesional y muy fácil de leer de un vistazo."
+        )
+
+        try:
+            config = types.GenerateContentConfig(
+                temperature=0.2,
+            )
+            response, _ = self._generate_with_retry(prompt, config)
+            text = response.text.strip()
+            if text:
+                return text
+        except Exception as e:
+            print(f"[Aviso] No se pudo generar síntesis con IA ({e}), usando resumen estructurado.")
+
+        return build_rule_based_summary(user_query, all_filas, partial_summaries)
 
     def extract_dynamic_query_batched(
         self,
@@ -543,25 +710,38 @@ class WhatsAppInsightExtractor:
 
         self.last_models_used = models_used
 
-        # Sintetizar respuesta directa conservando datos incluso si un lote aislado falló
-        if all_filas:
-            prefix = ""
+        pct_end = 100
+        latest_model = models_used[-1] if models_used else self.model
+        if progress_callback:
+            progress_callback(
+                total_chunks,
+                total_chunks,
+                pct_end,
+                len(all_filas),
+                "Consolidando conclusiones y resumen ejecutivo con IA...",
+                latest_model
+            )
+
+        if not all_filas and not respuestas_parciales:
             if batch_errors:
-                prefix = f"⚠️ *Nota: Hubo una interrupción en {len(batch_errors)} lote(s), pero se extrajeron los registros del resto de los mensajes exitosamente.*\n\n"
-            if respuestas_parciales:
-                respuesta_final = prefix + "\n\n".join(respuestas_parciales)
+                respuesta_final = f"Ocurrió un error al procesar los mensajes con la IA: {batch_errors[0]}"
             else:
-                respuesta_final = prefix + f"Se encontraron {len(all_filas)} registros relevantes en las conversaciones analizadas."
-        elif batch_errors:
-            respuesta_final = f"Ocurrió un error al procesar los mensajes con la IA: {batch_errors[0]}"
-        elif respuestas_parciales:
-            respuesta_final = "\n\n".join(respuestas_parciales)
+                respuesta_final = "No se encontraron menciones ni datos relevantes que cumplan con todos los filtros y condiciones solicitadas en los mensajes analizados."
+        elif total_chunks == 1:
+            if respuestas_parciales:
+                respuesta_final = respuestas_parciales[0]
+            elif all_filas:
+                respuesta_final = f"Se encontraron **{len(all_filas)} registros** relevantes en los mensajes analizados."
+            else:
+                respuesta_final = "No se encontraron menciones coincidentes."
         else:
-            respuesta_final = "No se encontraron menciones ni datos relevantes que cumplan con todos los filtros y condiciones solicitadas en los mensajes analizados."
+            # Consolidar síntesis ejecutiva unificada (vía IA o fallback algorítmico)
+            respuesta_final = self.synthesize_executive_summary(user_query, all_filas, respuestas_parciales)
 
         return {
             "respuesta_directa": respuesta_final,
             "columnas": unified_cols,
             "filas": all_filas,
-            "modelos_usados": models_used
+            "modelos_usados": models_used,
+            "errores_lotes": batch_errors,
         }

@@ -316,11 +316,16 @@ else:
             filas = res_data.get("filas", [])
             used_models_info = st.session_state.get("custom_model_display", "")
 
+            errores_lotes = res_data.get("errores_lotes", [])
+            if errores_lotes:
+                st.caption(f"ℹ️ *Nota técnica: Hubo una interrupción transitoria en {len(errores_lotes)} lote(s) debido a saturación temporal de red, pero se extrajeron los registros del resto de los mensajes exitosamente.*")
+
             if direct_ans:
-                st.markdown("### 💡 Respuesta y Conclusiones de la IA")
+                st.markdown("### 💡 Conclusiones Consolidadas de la IA")
                 if used_models_info:
                     st.caption(f"🧠 **Procesado con modelo de IA:** {used_models_info}")
-                st.info(direct_ans)
+                with st.container(border=True):
+                    st.markdown(direct_ans)
 
             if filas:
                 st.markdown("### 📊 Tabla Estructurada con Evidencias")

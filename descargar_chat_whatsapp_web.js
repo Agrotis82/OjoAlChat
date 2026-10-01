@@ -36,16 +36,19 @@
         return lines.length > 0 ? lines[0] : '';
     }
 
+    // La lista de mensajes es el elemento con scroll más alto de #main. WhatsApp la puede reemplazar
+    // mientras carga, así que se busca de nuevo en cada vuelta.
     function getScrollContainer() {
         const main = document.querySelector('#main');
         if (!main) return null;
-        for (const el of main.querySelectorAll('*')) {
+        let best = null;
+        for (const el of main.querySelectorAll('div')) {
+            if (el.scrollHeight <= el.clientHeight + 10) continue;
             const style = window.getComputedStyle(el);
-            if ((style.overflowY === 'auto' || style.overflowY === 'scroll') && el.scrollHeight > el.clientHeight) {
-                return el;
-            }
+            if (style.overflowY !== 'auto' && style.overflowY !== 'scroll') continue;
+            if (!best || el.scrollHeight > best.scrollHeight) best = el;
         }
-        return null;
+        return best;
     }
 
     const today = new Date();
@@ -131,6 +134,7 @@
 
         <div id="ojo-action-box" style="display:flex; flex-direction:column; gap:6px;">
             <button id="ojo-btn-start" style="background:#00a884; color:#111b21; border:none; padding:10px; border-radius:8px; font-weight:bold; cursor:pointer; font-size:13px;">▶ Iniciar Extracción Automática</button>
+            <button id="ojo-btn-continue" style="background:#ffd279; color:#111b21; border:none; padding:9px; border-radius:8px; font-weight:bold; cursor:pointer; font-size:12px; display:none;">⏩ Seguir bajando desde donde quedó</button>
             <button id="ojo-btn-stop" style="background:#374248; color:#e9edef; border:none; padding:8px; border-radius:8px; cursor:pointer; font-size:12px; display:none;">⏹ Detener y Descargar ahora</button>
         </div>
 
@@ -155,6 +159,11 @@
     let timer = null;
     let consecutiveSameCount = 0;
     let lastMessagesTotal = 0;
+    let lastProgressAt = Date.now();
+    // Orden de captura: cada pasada encuentra mensajes más viejos que la anterior, y dentro de una
+    // pasada están en el orden de la pantalla. Con eso el archivo sale del más viejo al más nuevo.
+    let passNumber = 0;
+    const IDLE_LIMIT_MS = 60000;
     let isExtracting = false;
     let lastExportedText = '';
     let lastFilename = '';
@@ -199,6 +208,7 @@
         document.getElementById('ojo-preview-box').style.display = 'none';
         document.getElementById('ojo-btn-start').style.display = 'block';
         document.getElementById('ojo-btn-stop').style.display = 'none';
+        document.getElementById('ojo-btn-continue').style.display = 'none';
     }
 
     const chatWatcher = setInterval(checkActiveChatChange, 1000);
@@ -379,6 +389,8 @@
             a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1);
 
         let currentDate = null;
+        passNumber++;
+        let position = 0;
         for (const el of items) {
             if (!el.hasAttribute('data-id')) {
                 currentDate = parseDivider(el.innerText) || currentDate;
@@ -415,7 +427,7 @@
                 if (!text) continue;
                 lines = [`${meta}${text}`];
             }
-            messagesMap.set(id, { fullText: lines.join('\n'), date: msgDate });
+            messagesMap.set(id, { fullText: lines.join('\n'), date: msgDate, pass: passNumber, pos: position++ });
         }
 
         document.getElementById('ojo-count').innerText = messagesMap.size;
@@ -431,10 +443,16 @@
         if (messagesMap.size === lastMessagesTotal) {
             consecutiveSameCount++;
             // WhatsApp a veces pide traer los mensajes viejos desde el celular: se toca y se sigue esperando.
-            if (clickLoadOlder()) consecutiveSameCount = 0;
+            if (clickLoadOlder()) lastProgressAt = Date.now();
+            const quieto = Math.round((Date.now() - lastProgressAt) / 1000);
+            if (quieto >= 5) {
+                document.getElementById('ojo-status').innerText = `⏳ Esperando que WhatsApp cargue más (${quieto} s)…`;
+            }
         } else {
             consecutiveSameCount = 0;
             lastMessagesTotal = messagesMap.size;
+            lastProgressAt = Date.now();
+            document.getElementById('ojo-status').innerText = '🔄 Subiendo y recopilando mensajes...';
         }
 
         // Parada 1: Fecha alcanzada
@@ -443,37 +461,36 @@
             return;
         }
 
-        // Parada 2: Inicio del chat. Unos 20 segundos sin mensajes nuevos: los viejos pueden tardar en cargar.
-        if (consecutiveSameCount >= 20) {
-            finishAndDownload(targetFromDate, targetToDate, "¡Inicio del chat alcanzado!");
+        // Parada 2: un minuto sin mensajes nuevos. En chats grandes WhatsApp tarda en traer los viejos.
+        if (Date.now() - lastProgressAt >= IDLE_LIMIT_MS) {
+            finishAndDownload(targetFromDate, targetToDate, "WhatsApp no cargó más mensajes");
             return;
         }
     }
 
-    function scrollStep(container) {
+    async function scrollStep(container) {
         if (!container) return;
+        // Si hace un rato que no aparece nada, bajar un poco y volver a subir: WhatsApp carga
+        // los mensajes viejos cuando ve que se llega arriba, no si ya se está ahí quieto.
+        if (consecutiveSameCount > 0 && consecutiveSameCount % 4 === 0) {
+            container.scrollTop = Math.min(800, container.scrollHeight);
+            await sleep(300);
+        }
         container.scrollTop = 0;
-        setTimeout(() => {
-            if (container.scrollTop === 0) container.scrollTop = 40;
-            container.scrollTop = 0;
-        }, 150);
+        await sleep(150);
+        if (container.scrollTop === 0) container.scrollTop = 40;
+        container.scrollTop = 0;
     }
 
     function finishAndDownload(fromDate, toDate, reason) {
         timer = null;
         isExtracting = false;
 
-        const filtered = [];
-        messagesMap.forEach(item => {
-            if (!item.date) {
-                filtered.push(item.fullText);
-            } else {
-                let valid = true;
-                if (fromDate && item.date < fromDate) valid = false;
-                if (toDate && item.date > toDate) valid = false;
-                if (valid) filtered.push(item.fullText);
-            }
-        });
+        const ordered = [...messagesMap.values()].sort((a, b) => (b.pass - a.pass) || (a.pos - b.pos));
+        const kept = ordered.filter(item =>
+            !item.date || ((!fromDate || item.date >= fromDate) && (!toDate || item.date <= toDate)));
+        const filtered = kept.map(item => item.fullText);
+        const dates = kept.map(item => item.date).filter(Boolean);
 
         if (filtered.length === 0) {
             alert("No se encontraron mensajes dentro del rango de fechas especificado.");
@@ -486,9 +503,14 @@
 
         const inputName = document.getElementById('ojo-chat-name').value;
         const finalGroupName = sanitizeFilename(inputName || currentChatTitle || 'chat');
-        const fromStr = fromDate ? fromDate.toISOString().slice(0,10) : 'inicio';
-        const toStr = toDate ? toDate.toISOString().slice(0,10) : 'hoy';
-        
+        // Las fechas del nombre son las del primer y el último mensaje bajado, no las pedidas.
+        const isoLocal = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+        const firstDate = dates.length ? new Date(Math.min(...dates)) : null;
+        const lastDate = dates.length ? new Date(Math.max(...dates)) : null;
+        const fromStr = firstDate ? isoLocal(firstDate) : 'inicio';
+        const toStr = lastDate ? isoLocal(lastDate) : 'hoy';
+        const stoppedEarly = fromDate && firstDate && firstDate > fromDate;
+
         lastFilename = `chat_${finalGroupName}_${filtered.length}msgs_${fromStr}_a_${toStr}.txt`;
         lastExportedText = filtered.join('\n\n');
 
@@ -497,8 +519,16 @@
         btnDl.innerText = `📥 Guardar Archivo (${filtered.length} msgs)`;
         document.getElementById('ojo-download-ready-box').style.display = 'flex';
 
-        document.getElementById('ojo-status').innerText = `✔️ ${reason} (${filtered.length} msgs listos)`;
-        document.getElementById('ojo-status').style.color = '#25d366';
+        if (stoppedEarly) {
+            document.getElementById('ojo-status').innerText =
+                `⚠️ ${reason}: llegó hasta el ${fmtDate(firstDate)}, no al ${fmtDate(fromDate)}. ` +
+                `Tocá "Seguir bajando" para continuar desde ahí (no se pierde lo ya bajado).`;
+            document.getElementById('ojo-status').style.color = '#ffd279';
+        } else {
+            document.getElementById('ojo-status').innerText = `✔️ ${reason} (${filtered.length} msgs listos)`;
+            document.getElementById('ojo-status').style.color = '#25d366';
+        }
+        document.getElementById('ojo-btn-continue').style.display = stoppedEarly ? 'block' : 'none';
 
         // Intento automático no invasivo en segundo plano
         try {
@@ -688,15 +718,23 @@
             return;
         }
 
-        document.getElementById('ojo-download-ready-box').style.display = 'none';
-        document.getElementById('ojo-preview-box').style.display = 'none';
         messagesMap.clear();
         contactCache.clear();
         contactsFound = 0;
         contactsWithoutPhone = 0;
         oldestDateFound = null;
+        passNumber = 0;
+        startLoop();
+    };
+
+    // Arranca (o retoma) la bajada. Retomar no borra lo ya juntado.
+    function startLoop() {
+        document.getElementById('ojo-download-ready-box').style.display = 'none';
+        document.getElementById('ojo-preview-box').style.display = 'none';
+        document.getElementById('ojo-btn-continue').style.display = 'none';
         consecutiveSameCount = 0;
-        lastMessagesTotal = 0;
+        lastMessagesTotal = messagesMap.size;
+        lastProgressAt = Date.now();
         isExtracting = true;
 
         const fromVal = document.getElementById('ojo-date-from').value;
@@ -715,10 +753,20 @@
             while (timer) {
                 await collectMessages(fromDate, toDate);
                 if (!timer) break;
-                scrollStep(scrollContainer);
+                await scrollStep(getScrollContainer());
                 await sleep(750);
             }
         })();
+    }
+
+    document.getElementById('ojo-btn-continue').onclick = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (!getScrollContainer()) {
+            alert("No se detectó el chat abierto. Volvé a abrir el mismo grupo y tocá de nuevo.");
+            return;
+        }
+        startLoop();
     };
 
     // Detener manual

@@ -55,18 +55,20 @@ with st.sidebar:
         st.markdown("[👉 Obtener API Key gratis en Google AI Studio](https://aistudio.google.com/apikey)")
     
     model_options = [
-        "⚡ Automático (Más nuevo primero: Gemini 2.5 Flash ➔ Fallbacks)",
-        "gemini-2.5-flash",
-        "gemini-2.5-flash-lite",
-        "gemini-2.0-flash"
+        "⚡ Automático (Más nuevo primero: Gemini 3.8 Flash ➔ Fallbacks)",
+        "gemini-3.8-flash",
+        "gemini-3.7-flash",
+        "gemini-3.6-flash",
+        "gemini-3.5-flash",
+        "gemini-3.5-flash-lite",
     ]
     model_selection = st.selectbox(
         "Modelo de IA",
         model_options,
         index=0,
-        help="En modo Automático, OjoAlChat consulta primero el modelo más nuevo y potente (Gemini 2.5 Flash). Si Google presenta saturación de demanda, desciende automáticamente a Flash-Lite o 2.0 sin detener la búsqueda."
+        help="En modo Automático, OjoAlChat consulta primero el modelo más nuevo y potente (Gemini 3.8 Flash). Si Google presenta saturación de demanda, desciende automáticamente a 3.7, 3.6 o 3.5 sin detener la búsqueda."
     )
-    model_choice = "gemini-2.5-flash" if "Automático" in model_selection else model_selection
+    model_choice = "gemini-3.8-flash" if "Automático" in model_selection else model_selection
     
     st.divider()
     st.subheader("📁 Carga de Chats")

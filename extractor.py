@@ -168,8 +168,45 @@ def deduplicate_recommendations(items: List[Dict[str, Any]]) -> List[Dict[str, A
 
     return list(merged_map.values())
 
+def discover_flash_models(client: genai.Client) -> List[str]:
+    """
+    Descubre dinámicamente los modelos Flash disponibles en la cuenta del usuario,
+    ordenados desde el más nuevo/avanzado hacia los más ligeros.
+    """
+    curated_priority = [
+        "gemini-3.8-flash",
+        "gemini-3.7-flash",
+        "gemini-3.6-flash",
+        "gemini-3.5-flash",
+        "gemini-3.5-flash-lite",
+        "gemini-3-flash-preview",
+    ]
+    discovered = []
+    try:
+        pager = client.models.list()
+        for m in pager:
+            name = m.name.replace("models/", "") if hasattr(m, "name") and m.name else ""
+            actions = getattr(m, "supported_actions", []) or []
+            if actions and "generateContent" not in actions:
+                continue
+            if "flash" in name.lower() and not any(x in name.lower() for x in ["image", "tts", "audio", "embed"]):
+                discovered.append(name)
+    except Exception as e:
+        print(f"[Aviso] No se pudieron listar modelos de Gemini: {e}")
+
+    ordered = []
+    for cp in curated_priority:
+        if cp in discovered or not discovered:
+            if cp not in ordered:
+                ordered.append(cp)
+    for d in discovered:
+        if d not in ordered:
+            ordered.append(d)
+
+    return ordered or curated_priority
+
 class WhatsAppInsightExtractor:
-    def __init__(self, api_key: Optional[str] = None, model: str = "gemini-2.5-flash"):
+    def __init__(self, api_key: Optional[str] = None, model: str = "gemini-3.8-flash"):
         self.api_key = api_key or os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
         if not self.api_key:
             raise ValueError("No se encontro una API Key de Gemini. Por favor configurala en la app o en las variables de entorno.")
@@ -177,15 +214,22 @@ class WhatsAppInsightExtractor:
             api_key=self.api_key,
             http_options=types.HttpOptions(timeout=60000)
         )
-        self.model = model or "gemini-2.5-flash"
+        self.available_models = discover_flash_models(self.client)
+        self.model = model or (self.available_models[0] if self.available_models else "gemini-3.8-flash")
         self.last_models_used: List[str] = []
         self.fallback_occurred: bool = False
 
     def _generate_with_retry(self, contents: str, config: types.GenerateContentConfig, max_retries: int = 2) -> Tuple[Any, str]:
         # Jerarquía estricta de mayor calidad a menor (comienza siempre con el más nuevo y adecuado)
-        active_models = ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.0-flash"]
+        active_models = self.available_models or [
+            "gemini-3.8-flash",
+            "gemini-3.7-flash",
+            "gemini-3.6-flash",
+            "gemini-3.5-flash",
+            "gemini-3.5-flash-lite",
+        ]
         candidate_models = []
-        if self.model and self.model in active_models:
+        if self.model:
             candidate_models.append(self.model)
         for m in active_models:
             if m not in candidate_models:
@@ -198,9 +242,17 @@ class WhatsAppInsightExtractor:
             for attempt in range(max_retries):
                 try:
                     call_config = config.model_copy() if hasattr(config, "model_copy") else config
-                    # Desactivar thinking en 2.5 para eliminar latencia y acelerar a ~2-3 segundos
-                    if "2.5" in model_name:
-                        call_config.thinking_config = types.ThinkingConfig(thinking_budget=0)
+                    # Configurar thinking para minimizar latencia en Gemini 3 (thinking_level="low")
+                    if any(k in model_name for k in ["gemini-3", "gemini-3.8", "gemini-3.7", "gemini-3.6", "gemini-3.5"]):
+                        try:
+                            call_config.thinking_config = types.ThinkingConfig(thinking_level="low")
+                        except Exception:
+                            call_config.thinking_config = None
+                    elif "2.5" in model_name:
+                        try:
+                            call_config.thinking_config = types.ThinkingConfig(thinking_budget=0)
+                        except Exception:
+                            call_config.thinking_config = None
                     else:
                         call_config.thinking_config = None
 
@@ -224,7 +276,7 @@ class WhatsAppInsightExtractor:
                             # Ante saturación/demanda, descender de inmediato al siguiente modelo de la jerarquía
                             break
                     else:
-                        # Si es error no transitorio (ej: no soportado), pasar directo al siguiente modelo
+                        # Si es error no transitorio (ej: no disponible para nuevos usuarios o 404), pasar directo al siguiente modelo
                         break
 
         summary = "; ".join([f"{k}: {v[:120]}" for k, v in model_errors.items()])

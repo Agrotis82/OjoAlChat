@@ -284,26 +284,40 @@ else:
         )
         st.info("💡 **Procesamiento inteligente por lotes activado**: OjoAlChat analiza todos los chats en bloques automáticos de 700 mensajes para sortear el límite de respuesta de Gemini. Si un profesional aparece en varios chats o mensajes, se unifican sus datos y elogios automáticamente.")
 
+        chats_disponibles = [info["Chat / Grupo"] for info in loaded_chats_info]
+        if len(chats_disponibles) > 1:
+            chats_a_analizar = st.multiselect(
+                "📂 Seleccionar chats a incluir en el análisis:",
+                chats_disponibles,
+                default=chats_disponibles,
+                help="Puedes seleccionar 'Todos' o elegir analizar un solo chat por separado."
+            )
+        else:
+            chats_a_analizar = chats_disponibles
+
+        active_pool_messages = [m for m in messages if not chats_a_analizar or m.source_chat in chats_a_analizar]
+        pool_len = len(active_pool_messages)
+
         col_btn_r, col_slider_r = st.columns([1, 3])
         with col_btn_r:
             start_recom = st.button("🚀 Extraer Proveedores con IA", disabled=not bool(api_key))
         with col_slider_r:
-            if total_m > 1:
+            if pool_len > 1:
                 chunk_r = st.slider(
                     "Mensajes a procesar",
-                    min_value=slider_min,
-                    max_value=total_m,
-                    value=total_m,
-                    step=slider_step,
+                    min_value=max(1, min(50, pool_len // 2)),
+                    max_value=pool_len,
+                    value=pool_len,
+                    step=max(1, min(100, pool_len // 10)) if pool_len > 50 else 1,
                     key="recom_slider",
-                    help="Por defecto se analiza el 100% de los mensajes cargados sin recortar ninguno."
+                    help="Por defecto se analiza el 100% de los mensajes de los chats seleccionados."
                 )
             else:
-                chunk_r = total_m
+                chunk_r = pool_len
 
         if start_recom:
             try:
-                selected_slice = messages[-chunk_r:] if chunk_r < len(messages) else messages
+                selected_slice = active_pool_messages[-chunk_r:] if chunk_r < pool_len else active_pool_messages
                 total_to_process = len(selected_slice)
 
                 prog_bar_r = st.progress(0, text="Iniciando extracción inteligente en lotes...")
@@ -312,61 +326,158 @@ else:
                 def update_progress_r(curr, total, count, msg):
                     pct = int((curr / total) * 100)
                     prog_bar_r.progress(min(pct, 100), text=f"Lote {curr} de {total} ({pct}%)")
-                    status_box_r.info(f"⏳ {msg} | Proveedores únicos detectados hasta el momento: **{count}**")
+                    status_box_r.info(f"⏳ {msg} | Menciones detectadas hasta el momento: **{count}**")
 
                 extractor = WhatsAppInsightExtractor(api_key=api_key, model=model_choice)
-                results = extractor.extract_recommendations_batched(
+                results_raw = extractor.extract_recommendations_batched(
                     selected_slice,
                     chunk_size=700,
+                    deduplicate=False,
                     progress_callback=update_progress_r
                 )
 
                 prog_bar_r.empty()
                 status_box_r.empty()
 
-                if results:
-                    df_r = pd.DataFrame(results)
-                    base_cols = ["nombre", "apellido", "rubro", "telefono", "barrio", "motivo", "avisado", "notas"]
-                    has_chats = any(r.get("chat_origen") for r in results) or len(loaded_chats_info) > 1
-                    cols = base_cols + (["chat_origen"] if has_chats and "chat_origen" in df_r.columns else [])
-                    for c in cols:
-                        if c not in df_r.columns:
-                            df_r[c] = ""
-                    df_r = df_r[cols]
-                    st.session_state["recom_df"] = df_r
-                    st.success(f"🎉 ¡Extracción completada! Se extrajeron **{len(df_r)}** proveedores recomendados únicos.")
+                if results_raw:
+                    st.session_state["raw_recommendations"] = results_raw
+                    # Generar df inicial deduplicado para mantener compatibilidad
+                    df_init = pd.DataFrame(extractor_module.deduplicate_recommendations(results_raw))
+                    st.session_state["recom_df"] = df_init
+                    st.success(f"🎉 ¡Extracción completada! Se detectaron **{len(results_raw)}** menciones individuales y **{len(df_init)}** proveedores únicos.")
                 else:
                     st.warning("No se encontraron recomendaciones en los mensajes analizados.")
             except Exception as e:
                 st.error(f"Error: {e}")
 
-        if "recom_df" in st.session_state:
-            df_r = st.session_state["recom_df"]
-            st.data_editor(df_r, num_rows="dynamic", use_container_width=True)
+        # Visualización y filtros
+        if "raw_recommendations" in st.session_state or "recom_df" in st.session_state:
+            raw_data = st.session_state.get("raw_recommendations")
+            if not raw_data and "recom_df" in st.session_state:
+                raw_data = st.session_state["recom_df"].to_dict(orient="records")
+
+            st.divider()
+            st.markdown("### 👁️ Opciones de Vista y Separación de Datos")
+
+            col_v1, col_v2, col_v3 = st.columns([2, 2, 2])
+
+            with col_v1:
+                view_mode = st.radio(
+                    "Modo de presentación:",
+                    [
+                        "👥 Proveedores Consolidados (1 por persona/teléfono)",
+                        "📋 Menciones Individuales (ver cada recomendación por separado)"
+                    ],
+                    index=0,
+                    help="Elige si quieres agrupar los duplicados o ver cada vez que alguien recomendó a alguien en el chat."
+                )
+
+            # Detectar lista de chats presentes
+            detected_chats = sorted(list(set(
+                str(r.get("chat_origen", "")).strip() 
+                for r in raw_data 
+                if str(r.get("chat_origen", "")).strip()
+            )))
+            for c_info in loaded_chats_info:
+                cn = c_info["Chat / Grupo"]
+                if cn not in detected_chats:
+                    detected_chats.append(cn)
+
+            with col_v2:
+                chat_filter = st.selectbox(
+                    "Filtrar por Chat / Grupo:",
+                    ["Todos los chats"] + detected_chats,
+                    help="Permite ver únicamente las recomendaciones originadas en un chat específico."
+                )
+
+            # Detectar rubros disponibles
+            detected_rubros = sorted(list(set(
+                str(r.get("rubro", "")).strip()
+                for r in raw_data
+                if str(r.get("rubro", "")).strip()
+            )))
+
+            with col_v3:
+                rubro_filter = st.selectbox(
+                    "Filtrar por Rubro:",
+                    ["Todos los rubros"] + detected_rubros
+                )
+
+            # Filtrar y preparar dataset visible
+            if "Consolidados" in view_mode:
+                if chat_filter != "Todos los chats":
+                    pool = [r for r in raw_data if chat_filter.lower() in str(r.get("chat_origen", "")).lower()]
+                    active_records = extractor_module.deduplicate_recommendations(pool)
+                else:
+                    active_records = extractor_module.deduplicate_recommendations(raw_data)
+            else:
+                if chat_filter != "Todos los chats":
+                    active_records = [r for r in raw_data if chat_filter.lower() in str(r.get("chat_origen", "")).lower()]
+                else:
+                    active_records = list(raw_data)
+
+            if rubro_filter != "Todos los rubros":
+                active_records = [r for r in active_records if str(r.get("rubro", "")).strip() == rubro_filter]
+
+            df_display = pd.DataFrame(active_records)
+            base_cols = ["nombre", "apellido", "rubro", "telefono", "barrio", "motivo", "avisado", "notas"]
+            has_chats_col = any(r.get("chat_origen") for r in active_records) or len(loaded_chats_info) > 1
+            display_cols = base_cols + (["chat_origen"] if has_chats_col and "chat_origen" in df_display.columns else [])
+            for c in display_cols:
+                if c not in df_display.columns:
+                    df_display[c] = ""
+            df_display = df_display[display_cols]
+
+            st.caption(f"Mostrando **{len(df_display)}** registros — *{view_mode.split('(')[0].strip()}* | Chat: *{chat_filter}*")
+            st.data_editor(df_display, num_rows="dynamic", use_container_width=True)
 
             col_r1, col_r2, col_r3 = st.columns(3)
             with col_r1:
+                # Excel con múltiples hojas para tener todas las vistas por separado
                 buf_r = io.BytesIO()
                 with pd.ExcelWriter(buf_r, engine="openpyxl") as writer:
-                    df_r.to_excel(writer, index=False, sheet_name="Recomendados")
+                    df_display.to_excel(writer, index=False, sheet_name="Vista_Filtrada")
+                    # Hoja consolidada completa
+                    df_full_cons = pd.DataFrame(extractor_module.deduplicate_recommendations(raw_data))
+                    for c in display_cols:
+                        if c not in df_full_cons.columns:
+                            df_full_cons[c] = ""
+                    df_full_cons[display_cols].to_excel(writer, index=False, sheet_name="Consolidado_Total")
+                    # Hoja menciones individuales
+                    df_full_raw = pd.DataFrame(raw_data)
+                    for c in display_cols:
+                        if c not in df_full_raw.columns:
+                            df_full_raw[c] = ""
+                    df_full_raw[display_cols].to_excel(writer, index=False, sheet_name="Menciones_Individuales")
+                    # Una hoja por cada chat individual
+                    for cn in detected_chats:
+                        chat_items = [r for r in raw_data if cn.lower() in str(r.get("chat_origen", "")).lower()]
+                        if chat_items:
+                            df_c = pd.DataFrame(chat_items)
+                            for c in display_cols:
+                                if c not in df_c.columns:
+                                    df_c[c] = ""
+                            safe_name = re.sub(r'[\\/*?:\[\]]', '', cn)[:30]
+                            df_c[display_cols].to_excel(writer, index=False, sheet_name=safe_name)
+
                 st.download_button(
-                    "📥 Descargar Excel (.xlsx)",
+                    "📥 Descargar Excel Multi-Hoja (.xlsx)",
                     data=buf_r.getvalue(),
-                    file_name="proveedores_recomendados.xlsx",
+                    file_name="proveedores_recomendados_completo.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    help="Incluye pestañas separadas: Vista Actual, Consolidado Total, Menciones Individuales y una pestaña por cada chat."
                 )
             with col_r2:
                 st.download_button(
-                    "📥 Descargar CSV",
-                    data=df_r.to_csv(index=False).encode("utf-8-sig"),
-                    file_name="proveedores_recomendados.csv",
+                    "📥 Descargar Vista en CSV",
+                    data=df_display.to_csv(index=False).encode("utf-8-sig"),
+                    file_name="proveedores_recomendados_vista.csv",
                     mime="text/csv",
                 )
             with col_r3:
-                base_cols = ["nombre", "apellido", "rubro", "telefono", "barrio", "motivo", "avisado", "notas"]
-                df_for_sheets = df_r[[c for c in base_cols if c in df_r.columns]]
+                df_for_sheets = df_display[[c for c in base_cols if c in df_display.columns]]
                 tsv_text = df_for_sheets.to_csv(sep="\t", index=False)
-                st.text_area("📋 Copiar y pegar a Google Sheets (8 columnas oficiales)", tsv_text, height=70)
+                st.text_area("📋 Copiar y pegar a Google Sheets (vista actual)", tsv_text, height=70)
 
     # ----------------- TAB 3: VER CHAT LIMPIO -----------------
     with tab_chat:

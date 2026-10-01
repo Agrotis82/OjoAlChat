@@ -231,12 +231,15 @@ class WhatsAppInsightExtractor:
         self,
         messages: List[Any],
         chunk_size: int = 700,
+        deduplicate: bool = True,
         progress_callback: Optional[Any] = None
     ) -> List[Dict[str, Any]]:
         """
         Procesa los mensajes en lotes de tamaño `chunk_size` para sortear el límite
         de tokens de salida de los LLMs (~4k-8k tokens en JSON) y asegurar la extracción
         del 100% de los contactos recomendados sin truncamiento.
+        
+        Si `deduplicate=False`, devuelve cada mención por separado sin fusionar.
         """
         if not messages:
             return []
@@ -262,9 +265,16 @@ class WhatsAppInsightExtractor:
                 for m in chunk
             ])
 
+            # Detectar si el lote proviene de un chat específico para completar chat_origen si falta
+            chunk_chats = set(getattr(m, "source_chat", "") for m in chunk if getattr(m, "source_chat", ""))
+            default_chat = list(chunk_chats)[0] if len(chunk_chats) == 1 else ""
+
             try:
                 batch_results = self.extract_recommendations(chunk_text)
                 if batch_results:
+                    for br in batch_results:
+                        if not br.get("chat_origen") and default_chat:
+                            br["chat_origen"] = default_chat
                     all_recommendations.extend(batch_results)
             except Exception as e:
                 print(f"[Aviso] Error procesando lote {chunk_num}/{total_chunks}: {e}")
@@ -274,12 +284,12 @@ class WhatsAppInsightExtractor:
                     chunk_num,
                     total_chunks,
                     len(all_recommendations),
-                    f"Lote {chunk_num}/{total_chunks} finalizado. {len(all_recommendations)} recomendados detectados."
+                    f"Lote {chunk_num}/{total_chunks} finalizado. {len(all_recommendations)} menciones detectadas."
                 )
 
-        # Deduplicar y fusionar datos cruzados
-        deduped = deduplicate_recommendations(all_recommendations)
-        return deduped
+        if deduplicate:
+            return deduplicate_recommendations(all_recommendations)
+        return all_recommendations
 
     def extract_dynamic_query_batched(
         self,

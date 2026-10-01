@@ -10,6 +10,7 @@ importlib.reload(parser_module)
 importlib.reload(extractor_module)
 from parser import WhatsAppParser, ChatMessage
 from extractor import WhatsAppInsightExtractor
+from proveedores_ia import PROVEEDORES, SERVICIOS_COMPATIBLES
 
 st.set_page_config(
     page_title="OjoAlChat | OjoAI",
@@ -29,46 +30,80 @@ def extract_chat_name(filename: str) -> str:
     cleaned = cleaned.replace('_', ' ').strip()
     return cleaned if cleaned else base
 
-# 1. Api Key Configuration (Local or Streamlit Secrets)
-api_key_default = ""
-try:
-    if hasattr(st, "secrets") and "GEMINI_API_KEY" in st.secrets:
-        api_key_default = st.secrets["GEMINI_API_KEY"]
-except Exception:
-    pass
-
-if not api_key_default:
-    api_key_default = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY") or ""
+# 1. Proveedor de IA, clave y modelo (la clave puede venir de Streamlit Secrets o de variables de entorno)
+def clave_guardada(variables):
+    for nombre in variables:
+        try:
+            if hasattr(st, "secrets") and nombre in st.secrets:
+                return st.secrets[nombre]
+        except Exception:
+            pass
+        if os.environ.get(nombre):
+            return os.environ[nombre]
+    return ""
 
 with st.sidebar:
     st.header("⚙️ Configuración")
-    
-    api_key = st.text_input(
-        "API Key de Gemini",
-        value=api_key_default,
-        type="password",
-        help="Obtén tu API key gratuita en https://aistudio.google.com/apikey"
+
+    provider_id = st.selectbox(
+        "Empresa de IA",
+        list(PROVEEDORES.keys()),
+        format_func=lambda k: PROVEEDORES[k]["nombre"],
+        help="OjoAlChat funciona con cualquiera de estas. Cada una cobra (o regala) según su propio plan."
     )
-    
+    proveedor = PROVEEDORES[provider_id]
+    base_url = None
+
+    if provider_id == "compatible":
+        servicio = st.selectbox("Servicio", list(SERVICIOS_COMPATIBLES.keys()) + ["Otro (escribir dirección)"])
+        if servicio in SERVICIOS_COMPATIBLES:
+            base_url = SERVICIOS_COMPATIBLES[servicio]
+        else:
+            base_url = st.text_input("Dirección de la API", placeholder="https://…/v1")
+
+    api_key = st.text_input(
+        f"API Key de {proveedor['nombre'].split(' (')[0]}",
+        value=clave_guardada(proveedor["variables"]),
+        type="password",
+        help="Se usa solo para esta sesión; no se guarda en ningún lado."
+    )
+    if provider_id == "compatible" and base_url and "localhost" in base_url and not api_key:
+        api_key = "ollama"  # Ollama en la misma computadora no pide clave
+
     if not api_key:
         st.warning("⚠️ Ingresa una API Key para habilitar la extracción con IA.")
-        st.markdown("[👉 Obtener API Key gratis en Google AI Studio](https://aistudio.google.com/apikey)")
-    
-    model_options = [
-        "⚡ Automático (Recomendado: Gemini 3.5 Flash-Lite ➔ 3.5 Flash ➔ 3.8 Flash)",
-        "gemini-3.5-flash-lite",
-        "gemini-3.5-flash",
-        "gemini-3.8-flash",
-        "gemini-3.7-flash",
-        "gemini-3.6-flash",
-    ]
-    model_selection = st.selectbox(
-        "Modelo de IA",
-        model_options,
-        index=0,
-        help="En modo Automático, OjoAlChat utiliza el modelo más rápido y optimizado para chats (Gemini 3.5 Flash-Lite, ~1.5s por lote). Si Google presenta saturación de demanda, desciende automáticamente a 3.5 Flash o 3.8 Flash sin detener la búsqueda."
-    )
-    model_choice = "gemini-3.5-flash-lite" if "Automático" in model_selection else model_selection
+        if proveedor["clave_url"]:
+            st.markdown(f"[👉 Obtener una API Key]({proveedor['clave_url']})")
+
+    if provider_id == "gemini":
+        model_options = [
+            "⚡ Automático (Recomendado: Gemini 3.5 Flash-Lite ➔ 3.5 Flash ➔ 3.8 Flash)",
+            "gemini-3.5-flash-lite",
+            "gemini-3.5-flash",
+            "gemini-3.8-flash",
+            "gemini-3.7-flash",
+            "gemini-3.6-flash",
+        ]
+        model_selection = st.selectbox(
+            "Modelo de IA",
+            model_options,
+            index=0,
+            help="En modo Automático, OjoAlChat utiliza el modelo más rápido y optimizado para chats (Gemini 3.5 Flash-Lite, ~1.5s por lote). Si Google presenta saturación de demanda, desciende automáticamente a 3.5 Flash o 3.8 Flash sin detener la búsqueda."
+        )
+        model_choice = "gemini-3.5-flash-lite" if "Automático" in model_selection else model_selection
+    elif provider_id == "anthropic":
+        model_choice = st.selectbox(
+            "Modelo de IA",
+            proveedor["modelos"],
+            index=0,
+            help="Opus es el más capaz; Sonnet y Haiku son más rápidos y más baratos."
+        )
+    else:
+        model_choice = st.text_input(
+            "Modelo de IA",
+            placeholder="El nombre exacto que figura en la página del servicio",
+            help="Por ejemplo, el modelo que tengas habilitado en tu cuenta de OpenAI, o el que descargaste en Ollama."
+        ).strip()
     
     st.divider()
     st.subheader("📁 Carga de Chats")
@@ -294,7 +329,7 @@ else:
                     else:
                         status_box_u.info(f"⏳ {msg}{tag_model} | Registros detectados hasta ahora: **{count}**")
 
-                extractor = WhatsAppInsightExtractor(api_key=api_key, model=model_choice)
+                extractor = WhatsAppInsightExtractor(api_key=api_key, model=model_choice, provider=provider_id, base_url=base_url)
                 result = extractor.extract_dynamic_query_batched(
                     selected_slice,
                     query,
@@ -437,7 +472,7 @@ else:
                     else:
                         status_box_r.info(f"⏳ {msg}{tag_model} | Menciones detectadas hasta el momento: **{count}**")
 
-                extractor = WhatsAppInsightExtractor(api_key=api_key, model=model_choice)
+                extractor = WhatsAppInsightExtractor(api_key=api_key, model=model_choice, provider=provider_id, base_url=base_url)
                 results_raw = extractor.extract_recommendations_batched(
                     selected_slice,
                     chunk_size=200,

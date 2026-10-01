@@ -8,6 +8,8 @@ from pydantic import BaseModel, Field
 from google import genai
 from google.genai import types
 
+from proveedores_ia import crear_cliente
+
 class ProviderRecommendation(BaseModel):
     nombre: str = Field(description="Nombre de pila de la persona o nombre del negocio/proveedor")
     apellido: Optional[str] = Field(default="", description="Apellido si se menciona o infiere, sino dejar vacio")
@@ -393,17 +395,27 @@ def discover_flash_models(client: genai.Client, cache_key: str = "") -> List[str
     return result
 
 class WhatsAppInsightExtractor:
-    def __init__(self, api_key: Optional[str] = None, model: str = "gemini-3.5-flash-lite"):
-        self.api_key = api_key or os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
-        if not self.api_key:
-            raise ValueError("No se encontro una API Key de Gemini. Por favor configurala en la app o en las variables de entorno.")
-        self.client = genai.Client(
-            api_key=self.api_key,
-            http_options=types.HttpOptions(timeout=30000)
-        )
-        cache_id = self.api_key[:8] if self.api_key else ""
-        self.available_models = discover_flash_models(self.client, cache_key=cache_id)
-        self.model = model or (self.available_models[0] if self.available_models else "gemini-3.5-flash-lite")
+    def __init__(self, api_key: Optional[str] = None, model: str = "gemini-3.5-flash-lite",
+                 provider: str = "gemini", base_url: Optional[str] = None):
+        # provider: "gemini", "anthropic", "openai" o "compatible" (ver proveedores_ia.py)
+        self.provider = provider
+        self.llm = None
+        if provider == "gemini":
+            self.api_key = api_key or os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+            if not self.api_key:
+                raise ValueError("No se encontro una API Key de Gemini. Por favor configurala en la app o en las variables de entorno.")
+            self.client = genai.Client(
+                api_key=self.api_key,
+                http_options=types.HttpOptions(timeout=30000)
+            )
+            cache_id = self.api_key[:8] if self.api_key else ""
+            self.available_models = discover_flash_models(self.client, cache_key=cache_id)
+            self.model = model or (self.available_models[0] if self.available_models else "gemini-3.5-flash-lite")
+        else:
+            self.api_key = api_key
+            self.llm = crear_cliente(provider, api_key, model, base_url)
+            self.model = self.llm.modelo
+            self.available_models = [self.model]
         self.last_models_used: List[str] = []
         self.fallback_occurred: bool = False
         # Teléfonos que la IA puso como del proveedor pero eran de quien escribió (ver descartar_telefonos_de_remitentes).
@@ -492,6 +504,21 @@ class WhatsAppInsightExtractor:
         summary = "; ".join([f"{k}: {v[:120]}" for k, v in model_errors.items()])
         raise RuntimeError(f"Error procesando con la IA ({summary})")
 
+    def _pedir(self, prompt: str, json: bool = True, schema: Any = None,
+               temperatura: Optional[float] = None) -> Tuple[str, str]:
+        """Manda el pedido al proveedor elegido y devuelve (texto, modelo_usado)."""
+        if self.llm is not None:
+            return self.llm.generar(prompt, json=json, temperatura=temperatura)
+        opciones: Dict[str, Any] = {}
+        if json:
+            opciones["response_mime_type"] = "application/json"
+        if schema is not None:
+            opciones["response_schema"] = schema
+        if temperatura is not None:
+            opciones["temperature"] = temperatura
+        response, model_used = self._generate_with_retry(prompt, types.GenerateContentConfig(**opciones))
+        return response.text, model_used
+
     def extract_recommendations(self, messages_text: str) -> Tuple[List[Dict[str, Any]], str]:
         prompt = (
             "Eres un analista experto en extraer recomendaciones de servicios y personas a partir de chats de WhatsApp.\n"
@@ -518,20 +545,13 @@ class WhatsAppInsightExtractor:
         )
 
         try:
-            config = types.GenerateContentConfig(
-                response_mime_type="application/json",
-                response_schema=RecommendationBatch,
-            )
-            response, model_used = self._generate_with_retry(prompt, config)
-            data = _safe_json_loads(response.text)
+            texto, model_used = self._pedir(prompt, schema=RecommendationBatch if self.llm is None else None)
+            data = _safe_json_loads(texto)
             return data.get("recomendados", []), model_used
         except Exception:
             # Fallback sin response_schema estricto para evitar restricciones de Developer API
-            config = types.GenerateContentConfig(
-                response_mime_type="application/json",
-            )
-            response, model_used = self._generate_with_retry(prompt, config)
-            data = _safe_json_loads(response.text)
+            texto, model_used = self._pedir(prompt)
+            data = _safe_json_loads(texto)
             return data.get("recomendados", []), model_used
 
     def extract_dynamic_query(self, messages_text: str, user_query: str) -> Tuple[Any, str]:
@@ -564,11 +584,8 @@ class WhatsAppInsightExtractor:
             f"HISTORIAL DE MENSAJES A ANALIZAR:\n{messages_text}"
         )
 
-        config = types.GenerateContentConfig(
-            response_mime_type="application/json",
-        )
-        response, model_used = self._generate_with_retry(prompt, config)
-        return _safe_json_loads(response.text), model_used
+        texto, model_used = self._pedir(prompt)
+        return _safe_json_loads(texto), model_used
 
     def extract_recommendations_batched(
         self,
@@ -691,11 +708,8 @@ class WhatsAppInsightExtractor:
         )
 
         try:
-            config = types.GenerateContentConfig(
-                temperature=0.2,
-            )
-            response, _ = self._generate_with_retry(prompt, config)
-            text = response.text.strip()
+            texto, _ = self._pedir(prompt, json=False, temperatura=0.2)
+            text = texto.strip()
             if text:
                 return text
         except Exception as e:

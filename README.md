@@ -30,4 +30,10 @@ Para que los usuarios que entren a la web no tengan que colocar una API key:
    ```toml
    GEMINI_API_KEY = "tu_clave_de_gemini"
    ```
+   OjoAlChat también funciona con otras empresas de IA (se elige en la barra lateral). Cargá solo la clave de la que uses:
+   ```toml
+   ANTHROPIC_API_KEY = "tu_clave_de_claude"
+   OPENAI_API_KEY = "tu_clave_de_openai"
+   OJO_API_KEY = "tu_clave_de_deepseek_groq_u_openrouter"
+   ```
 3. Guarda los cambios. ¡Tu web estará lista con un link público para compartir!

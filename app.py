@@ -55,20 +55,20 @@ with st.sidebar:
         st.markdown("[👉 Obtener API Key gratis en Google AI Studio](https://aistudio.google.com/apikey)")
     
     model_options = [
-        "⚡ Automático (Más nuevo primero: Gemini 3.8 Flash ➔ Fallbacks)",
+        "⚡ Automático (Recomendado: Gemini 3.5 Flash-Lite ➔ 3.5 Flash ➔ 3.8 Flash)",
+        "gemini-3.5-flash-lite",
+        "gemini-3.5-flash",
         "gemini-3.8-flash",
         "gemini-3.7-flash",
         "gemini-3.6-flash",
-        "gemini-3.5-flash",
-        "gemini-3.5-flash-lite",
     ]
     model_selection = st.selectbox(
         "Modelo de IA",
         model_options,
         index=0,
-        help="En modo Automático, OjoAlChat consulta primero el modelo más nuevo y potente (Gemini 3.8 Flash). Si Google presenta saturación de demanda, desciende automáticamente a 3.7, 3.6 o 3.5 sin detener la búsqueda."
+        help="En modo Automático, OjoAlChat utiliza el modelo más rápido y optimizado para chats (Gemini 3.5 Flash-Lite, ~1.5s por lote). Si Google presenta saturación de demanda, desciende automáticamente a 3.5 Flash o 3.8 Flash sin detener la búsqueda."
     )
-    model_choice = "gemini-3.8-flash" if "Automático" in model_selection else model_selection
+    model_choice = "gemini-3.5-flash-lite" if "Automático" in model_selection else model_selection
     
     st.divider()
     st.subheader("📁 Carga de Chats")
@@ -274,7 +274,10 @@ else:
                     current_lote = min(step + 1, total) if pct < 100 else total
                     prog_bar_u.progress(min(pct, 100), text=f"Progreso: {pct}% — Lote {current_lote} de {total}")
                     tag_model = f" | 🧠 Modelo IA: `{current_model}`" if current_model else ""
-                    status_box_u.info(f"⏳ {msg}{tag_model} | Registros detectados hasta ahora: **{count}**")
+                    if count == 0 and step == 0:
+                        status_box_u.info(f"⏳ {msg}{tag_model} | 🔍 Extrayendo datos con IA (el contador se actualizará al completar cada lote)...")
+                    else:
+                        status_box_u.info(f"⏳ {msg}{tag_model} | Registros detectados hasta ahora: **{count}**")
 
                 extractor = WhatsAppInsightExtractor(api_key=api_key, model=model_choice)
                 result = extractor.extract_dynamic_query_batched(
@@ -405,7 +408,10 @@ else:
                     current_lote = min(step + 1, total) if pct < 100 else total
                     prog_bar_r.progress(min(pct, 100), text=f"Progreso: {pct}% — Lote {current_lote} de {total}")
                     tag_model = f" | 🧠 Modelo IA: `{current_model}`" if current_model else ""
-                    status_box_r.info(f"⏳ {msg}{tag_model} | Menciones detectadas hasta el momento: **{count}**")
+                    if count == 0 and step == 0:
+                        status_box_r.info(f"⏳ {msg}{tag_model} | 🔍 Extrayendo datos con IA (el contador se actualizará al completar cada lote)...")
+                    else:
+                        status_box_r.info(f"⏳ {msg}{tag_model} | Menciones detectadas hasta el momento: **{count}**")
 
                 extractor = WhatsAppInsightExtractor(api_key=api_key, model=model_choice)
                 results_raw = extractor.extract_recommendations_batched(

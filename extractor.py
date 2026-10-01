@@ -168,17 +168,22 @@ def deduplicate_recommendations(items: List[Dict[str, Any]]) -> List[Dict[str, A
 
     return list(merged_map.values())
 
-def discover_flash_models(client: genai.Client) -> List[str]:
+_DISCOVERED_MODELS_CACHE: Dict[str, List[str]] = {}
+
+def discover_flash_models(client: genai.Client, cache_key: str = "") -> List[str]:
     """
     Descubre dinámicamente los modelos Flash disponibles en la cuenta del usuario,
-    ordenados desde el más nuevo/avanzado hacia los más ligeros.
+    ordenados priorizando los más adecuados para procesamiento ágil de chats.
     """
+    if cache_key and cache_key in _DISCOVERED_MODELS_CACHE:
+        return _DISCOVERED_MODELS_CACHE[cache_key]
+
     curated_priority = [
+        "gemini-3.5-flash-lite",
+        "gemini-3.5-flash",
         "gemini-3.8-flash",
         "gemini-3.7-flash",
         "gemini-3.6-flash",
-        "gemini-3.5-flash",
-        "gemini-3.5-flash-lite",
         "gemini-3-flash-preview",
     ]
     discovered = []
@@ -203,30 +208,34 @@ def discover_flash_models(client: genai.Client) -> List[str]:
         if d not in ordered:
             ordered.append(d)
 
-    return ordered or curated_priority
+    result = ordered or curated_priority
+    if cache_key:
+        _DISCOVERED_MODELS_CACHE[cache_key] = result
+    return result
 
 class WhatsAppInsightExtractor:
-    def __init__(self, api_key: Optional[str] = None, model: str = "gemini-3.8-flash"):
+    def __init__(self, api_key: Optional[str] = None, model: str = "gemini-3.5-flash-lite"):
         self.api_key = api_key or os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
         if not self.api_key:
             raise ValueError("No se encontro una API Key de Gemini. Por favor configurala en la app o en las variables de entorno.")
         self.client = genai.Client(
             api_key=self.api_key,
-            http_options=types.HttpOptions(timeout=60000)
+            http_options=types.HttpOptions(timeout=30000)
         )
-        self.available_models = discover_flash_models(self.client)
-        self.model = model or (self.available_models[0] if self.available_models else "gemini-3.8-flash")
+        cache_id = self.api_key[:8] if self.api_key else ""
+        self.available_models = discover_flash_models(self.client, cache_key=cache_id)
+        self.model = model or (self.available_models[0] if self.available_models else "gemini-3.5-flash-lite")
         self.last_models_used: List[str] = []
         self.fallback_occurred: bool = False
 
     def _generate_with_retry(self, contents: str, config: types.GenerateContentConfig, max_retries: int = 2) -> Tuple[Any, str]:
-        # Jerarquía estricta de mayor calidad a menor (comienza siempre con el más nuevo y adecuado)
+        # Jerarquía ordenada: primero el modelo seleccionado/adecuado, luego los respaldos
         active_models = self.available_models or [
+            "gemini-3.5-flash-lite",
+            "gemini-3.5-flash",
             "gemini-3.8-flash",
             "gemini-3.7-flash",
             "gemini-3.6-flash",
-            "gemini-3.5-flash",
-            "gemini-3.5-flash-lite",
         ]
         candidate_models = []
         if self.model:
@@ -242,8 +251,13 @@ class WhatsAppInsightExtractor:
             for attempt in range(max_retries):
                 try:
                     call_config = config.model_copy() if hasattr(config, "model_copy") else config
-                    # Configurar thinking para minimizar latencia en Gemini 3 (thinking_level="low")
-                    if any(k in model_name for k in ["gemini-3", "gemini-3.8", "gemini-3.7", "gemini-3.6", "gemini-3.5"]):
+                    # Configurar thinking: 'minimal' para 3.5 elimina la latencia y responde en ~1.5s
+                    if any(k in model_name for k in ["3.5-flash-lite", "3.1-flash-lite", "3.5-flash", "3.6-flash"]):
+                        try:
+                            call_config.thinking_config = types.ThinkingConfig(thinking_level="minimal")
+                        except Exception:
+                            call_config.thinking_config = None
+                    elif any(k in model_name for k in ["3.8", "3.7", "gemini-3"]):
                         try:
                             call_config.thinking_config = types.ThinkingConfig(thinking_level="low")
                         except Exception:
@@ -266,17 +280,32 @@ class WhatsAppInsightExtractor:
                     return response, model_name
                 except Exception as e:
                     err_msg = str(e)
+                    # Reintento de emergencia sin thinking si el modelo no soporta el parámetro
+                    if call_config.thinking_config is not None and any(t in err_msg.lower() for t in ["thinking", "invalid_argument", "400"]):
+                        try:
+                            call_config.thinking_config = None
+                            response = self.client.models.generate_content(
+                                model=model_name,
+                                contents=contents,
+                                config=call_config,
+                            )
+                            if model_name != first_candidate:
+                                self.fallback_occurred = True
+                            return response, model_name
+                        except Exception as inner_e:
+                            err_msg = str(inner_e)
+
                     model_errors[f"{model_name}_intento_{attempt+1}"] = err_msg
                     err_lower = err_msg.lower()
                     if any(term in err_lower for term in ["503", "429", "unavailable", "high demand", "capacity", "temporary", "timeout", "deadline"]):
                         if attempt < max_retries - 1:
-                            wait_sec = 1.0 + random.uniform(0.2, 0.5)
+                            wait_sec = 0.8 + random.uniform(0.1, 0.4)
                             time.sleep(wait_sec)
                         else:
-                            # Ante saturación/demanda, descender de inmediato al siguiente modelo de la jerarquía
+                            # Ante saturación/demanda, descender de inmediato al siguiente modelo
                             break
                     else:
-                        # Si es error no transitorio (ej: no disponible para nuevos usuarios o 404), pasar directo al siguiente modelo
+                        # Si es error no transitorio (ej: modelo no habilitado en cuenta o 404), pasar directo al siguiente modelo
                         break
 
         summary = "; ".join([f"{k}: {v[:120]}" for k, v in model_errors.items()])

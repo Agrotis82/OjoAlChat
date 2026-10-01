@@ -198,22 +198,26 @@ class WhatsAppInsightExtractor:
 
     def extract_dynamic_query(self, messages_text: str, user_query: str) -> Dict[str, Any]:
         prompt = (
-            "Eres un asistente analista de datos avanzado para chats grupales de WhatsApp.\n"
-            f"El usuario necesita recopilar la siguiente informacion especifica: \"{user_query}\".\n\n"
+            "Eres un asistente analista de inteligencia de datos para cualquier tipo de chat de WhatsApp "
+            "(reuniones de trabajo, colegio/padres, consorcio/vecinos, asados/eventos, compra/venta, reclamos, etc.).\n"
+            f"El usuario necesita consultar o buscar lo siguiente en las conversaciones: \"{user_query}\".\n\n"
             "Instrucciones:\n"
-            "1. Determina un conjunto de 4 a 7 nombres de columnas claras, elegantes y en español que mejor estructuren los datos solicitados.\n"
-            "2. Analiza minuciosamente los mensajes del chat y extrae todas las ocurrencias que respondan a la consulta.\n"
-            "3. Para cada ocurrencia, llena los valores correspondientes a esas columnas.\n"
-            "4. Incluye siempre una columna adicional llamada 'cita_o_fuente' con la fecha o fragmento del mensaje para verificar el dato.\n"
-            "5. Si no hay informacion relevante sobre la consulta, devuelve filas como una lista vacia.\n\n"
+            "1. Redacta una 'respuesta_directa' en español: un texto conversacional, claro y completo que responda directamente "
+            "la pregunta del usuario (quién dijo qué, fechas, precios, acuerdos, deudas o conclusiones encontradas).\n"
+            "2. Define entre 4 y 7 nombres de columnas claras y elegantes para estructurar en tabla los registros encontrados.\n"
+            "3. En cada registro ('filas'), completa las columnas correspondientes y agrega siempre 'cita_o_fuente' (fragmento/autor/fecha) "
+            "y 'chat_origen' (si el mensaje incluye el nombre del grupo entre corchetes).\n"
+            "4. Si no hay datos sobre la consulta, indica en 'respuesta_directa' que no se encontró información y deja 'filas' vacía.\n\n"
             "Debes responder UNICAMENTE con un objeto JSON con la siguiente estructura exacta:\n"
             "{\n"
-            '  "columnas": ["Columna1", "Columna2", "Columna3", "cita_o_fuente"],\n'
+            '  "respuesta_directa": "Texto explicando detalladamente la respuesta al usuario...",\n'
+            '  "columnas": ["Columna1", "Columna2", "Columna3", "chat_origen", "cita_o_fuente"],\n'
             '  "filas": [\n'
             '    {\n'
             '      "Columna1": "valor...",\n'
             '      "Columna2": "valor...",\n'
             '      "Columna3": "valor...",\n'
+            '      "chat_origen": "nombre del grupo...",\n'
             '      "cita_o_fuente": "fecha o mensaje..."\n'
             '    }\n'
             '  ]\n'
@@ -303,7 +307,11 @@ class WhatsAppInsightExtractor:
         sin exceder la ventana de tokens de salida.
         """
         if not messages:
-            return {"columnas": [], "filas": []}
+            return {
+                "respuesta_directa": "No hay mensajes cargados para analizar.",
+                "columnas": [],
+                "filas": []
+            }
 
         total_msgs = len(messages)
         chunks = [messages[i:i + chunk_size] for i in range(0, total_msgs, chunk_size)]
@@ -311,6 +319,7 @@ class WhatsAppInsightExtractor:
 
         all_filas: List[Dict[str, Any]] = []
         unified_cols: List[str] = []
+        respuestas_parciales: List[str] = []
 
         for idx, chunk in enumerate(chunks):
             chunk_num = idx + 1
@@ -327,18 +336,37 @@ class WhatsAppInsightExtractor:
                 for m in chunk
             ])
 
+            chunk_chats = set(getattr(m, "source_chat", "") for m in chunk if getattr(m, "source_chat", ""))
+            default_chat = list(chunk_chats)[0] if len(chunk_chats) == 1 else ""
+
             try:
                 res = self.extract_dynamic_query(chunk_text, user_query)
+                direct = str(res.get("respuesta_directa", "")).strip()
+                if direct and not any(term in direct.lower() for term in ["no se encontró", "no hay información", "no encontré", "no se encontraron"]):
+                    respuestas_parciales.append(direct)
+
                 cols = res.get("columnas", [])
                 filas = res.get("filas", [])
                 if not unified_cols and cols:
                     unified_cols = cols
                 if filas:
+                    for f in filas:
+                        if not f.get("chat_origen") and default_chat:
+                            f["chat_origen"] = default_chat
                     all_filas.extend(filas)
             except Exception as e:
                 print(f"[Aviso] Error en consulta dinámica lote {chunk_num}: {e}")
 
+        # Sintetizar respuesta directa
+        if respuestas_parciales:
+            respuesta_final = "\n\n".join(respuestas_parciales)
+        elif all_filas:
+            respuesta_final = f"Se encontraron {len(all_filas)} registros relevantes en las conversaciones analizadas."
+        else:
+            respuesta_final = "No se encontraron menciones ni datos relevantes sobre esa búsqueda en los mensajes analizados."
+
         return {
+            "respuesta_directa": respuesta_final,
             "columnas": unified_cols,
             "filas": all_filas
         }

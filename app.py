@@ -89,15 +89,15 @@ with st.sidebar:
             placeholder="[29/9/2026, 14:49:10] Juan: Recomiendo a Pedro Plomero 11223344\n[29/9/2026, 14:50:00] María: ¡Gracias!"
         )
 
-    # Acceso rápido si existe archivo local
+    # Acceso rápido si existe archivo local de prueba
     local_path = r"C:\Users\Agos\DocumentosAgos\Datito\chat_whatsapp_vecinasmolineras-2026-09-30desde030206.txt"
     if os.path.exists(local_path) and not uploaded_files and not pasted_text.strip():
-        if st.button("Cargar chat de ejemplo (Haras Santa María)"):
+        if st.button("📁 Cargar chat de demostración (3.300 msgs)"):
             st.session_state["use_local_default"] = True
 
     pre_extracted_xlsx = r"C:\Users\Agos\DocumentosAgos\Datito\proveedores_recomendados_whatsapp.xlsx"
     if os.path.exists(pre_extracted_xlsx):
-        if st.button("📊 Ver los 168 recomendados ya extraídos"):
+        if st.button("📊 Ver planilla de ejemplo ya extraída"):
             st.session_state["recom_df"] = pd.read_excel(pre_extracted_xlsx)
             st.session_state["use_local_default"] = True
 
@@ -172,9 +172,9 @@ else:
             st.dataframe(pd.DataFrame(loaded_chats_info), use_container_width=True, hide_index=True)
 
     tab_universal, tab_recom, tab_chat = st.tabs([
-        "🔍 Búsqueda Universal (Cualquier Consulta)",
-        "👥 Planilla de Recomendados (Google Sheets)",
-        "📜 Ver Mensajes Limpios"
+        "🔍 Búsqueda Universal (Cualquier Chat o Pregunta)",
+        "🛠️ Plantilla: Directorio de Profesionales",
+        "📜 Explorador de Mensajes"
     ])
 
     total_m = len(messages)
@@ -183,57 +183,81 @@ else:
 
     # ----------------- TAB 1: BÚSQUEDA UNIVERSAL LIBRE -----------------
     with tab_universal:
-        st.subheader("Búsqueda de Cualquier Tipo de Información")
-        st.write("Escribe con tus propias palabras qué necesitas encontrar en el chat. La IA creará la tabla adecuada automáticamente.")
+        st.subheader("🔍 Ojo Universal: Pregunta o Busca Cualquier Cosa en tus Chats")
+        st.write(
+            "Escribe en tus propias palabras qué necesitas encontrar o saber. "
+            "OjoAlChat responderá directamente tu pregunta en lenguaje natural y creará una planilla con la evidencia y fuentes encontradas."
+        )
 
-        st.markdown("**Ejemplos rápidos para inspirarte (haz clic para probar):**")
-        ex_cols = st.columns(4)
-        if ex_cols[0].button("🍕 Comida y Gastronomía"):
-            st.session_state["search_query_input"] = "Extrae todas las personas o comercios que venden comida casera, viandas, postres o delivery, indicando qué ofrecen, contacto y precios si hay"
-        if ex_cols[1].button("🏡 Alquileres de Casas"):
-            st.session_state["search_query_input"] = "Busca todos los que ofrecen o buscan casas o quintas en alquiler, indicando lote, características y precio mencionado"
-        if ex_cols[2].button("⚠️ Seguridad y Reclamos"):
-            st.session_state["search_query_input"] = "Extrae todos los incidentes o reclamos de seguridad, corte de luz o problemas comunitarios con fecha y lote"
-        if ex_cols[3].button("📚 Profesores y Clases"):
-            st.session_state["search_query_input"] = "Extrae profesores o personas que ofrecen clases particulares (inglés, tenis, música, etc.) con sus contactos"
+        st.markdown("**Ideas y casos de uso populares (haz clic para autocompletar):**")
+        ex_r1 = st.columns(3)
+        if ex_r1[0].button("🏫 Escuela / Padres"):
+            st.session_state["search_query_input"] = "Extrae todas las reuniones de padres, eventos escolares, fechas límite, cuotas o pagos informados con fechas y detalles"
+        if ex_r1[1].button("🏢 Consorcio / Edificio"):
+            st.session_state["search_query_input"] = "Busca todos los reclamos de mantenimiento, humedad, cortes de agua/luz, ruidos molestos y asambleas con fecha y depto"
+        if ex_r1[2].button("💼 Trabajo y Proyectos"):
+            st.session_state["search_query_input"] = "Extrae las decisiones clave tomadas, acuerdos alcanzados, links de documentos y tareas asignadas con responsables"
+
+        ex_r2 = st.columns(3)
+        if ex_r2[0].button("🍖 Asado / Evento"):
+            st.session_state["search_query_input"] = "Lista quiénes confirmaron que van, qué comida o bebida se comprometió a llevar cada uno y montos de dinero recaudados"
+        if ex_r2[1].button("🛍️ Compra y Venta"):
+            st.session_state["search_query_input"] = "Extrae todos los productos ofrecidos a la venta (autos, muebles, electrodomésticos, etc.) con precio y contacto"
+        if ex_r2[2].button("🍕 Comida y Delivery"):
+            st.session_state["search_query_input"] = "Extrae todas las personas o comercios que venden comida casera, viandas, empanadas, postres o delivery, con precios y contacto"
+
+        chats_disponibles_u = [info["Chat / Grupo"] for info in loaded_chats_info]
+        if len(chats_disponibles_u) > 1:
+            chats_a_buscar_u = st.multiselect(
+                "📂 Buscar en los siguientes chats:",
+                chats_disponibles_u,
+                default=chats_disponibles_u,
+                key="multiselect_chats_universal",
+                help="Puedes buscar de forma cruzada en todos los grupos o desmarcar alguno para buscar en uno solo."
+            )
+        else:
+            chats_a_buscar_u = chats_disponibles_u
+
+        active_pool_u = [m for m in messages if not chats_a_buscar_u or m.source_chat in chats_a_buscar_u]
+        pool_u_len = len(active_pool_u)
 
         default_query = st.session_state.get("search_query_input", "")
         query = st.text_area(
-            "¿Qué deseas extraer de los chats?",
+            "¿Qué deseas encontrar o preguntar a los chats?",
             value=default_query,
-            placeholder="Ej: 'Extrae todos los contactos de electricistas y plomeros con los comentarios de quién los recomendó y en qué fecha'",
+            placeholder="Ej: '¿Quién dijo que vendía una heladera y cuánto pedía?' o '¿A qué hora dijeron que abre la pileta?' o 'Extrae todos los cumpleaños mencionados'",
             height=90
         )
 
         col_btn_u, col_slider_u = st.columns([1, 3])
         with col_btn_u:
-            btn_universal = st.button("🚀 Buscar y Extraer con IA", type="primary", disabled=not (bool(api_key) and bool(query.strip())))
+            btn_universal = st.button("🚀 Buscar con IA", type="primary", disabled=not (bool(api_key) and bool(query.strip())))
         with col_slider_u:
-            if total_m > 1:
+            if pool_u_len > 1:
                 sample_size = st.slider(
                     "Cantidad de mensajes recientes a analizar",
-                    min_value=slider_min,
-                    max_value=total_m,
-                    value=total_m,
-                    step=slider_step,
+                    min_value=max(1, min(50, pool_u_len // 2)),
+                    max_value=pool_u_len,
+                    value=pool_u_len,
+                    step=max(1, min(100, pool_u_len // 10)) if pool_u_len > 50 else 1,
                     key="slider_universal",
-                    help="Por defecto se analiza el 100% de los mensajes cargados usando procesamiento inteligente en lotes."
+                    help="Por defecto se analiza el 100% de los mensajes de los chats seleccionados."
                 )
             else:
-                sample_size = total_m
+                sample_size = pool_u_len
 
         if btn_universal:
             try:
-                selected_slice = messages[-sample_size:] if sample_size < len(messages) else messages
+                selected_slice = active_pool_u[-sample_size:] if sample_size < pool_u_len else active_pool_u
                 total_to_process = len(selected_slice)
-                
+
                 prog_bar_u = st.progress(0, text="Iniciando búsqueda inteligente...")
                 status_box_u = st.empty()
 
                 def update_progress_u(curr, total, count, msg):
                     pct = int((curr / total) * 100)
                     prog_bar_u.progress(min(pct, 100), text=f"Lote {curr} de {total} ({pct}%)")
-                    status_box_u.info(f"⏳ {msg} | Registros encontrados hasta ahora: **{count}**")
+                    status_box_u.info(f"⏳ {msg} | Registros detectados hasta ahora: **{count}**")
 
                 extractor = WhatsAppInsightExtractor(api_key=api_key, model=model_choice)
                 result = extractor.extract_dynamic_query_batched(
@@ -242,38 +266,59 @@ else:
                     chunk_size=800,
                     progress_callback=update_progress_u
                 )
-                
+
                 prog_bar_u.empty()
                 status_box_u.empty()
 
+                st.session_state["custom_result_full"] = result
                 filas = result.get("filas", [])
                 if filas:
-                    df_custom = pd.DataFrame(filas)
-                    st.session_state["custom_results_df"] = df_custom
-                    st.success(f"¡Se encontraron {len(df_custom)} registros relevantes en total!")
+                    st.success(f"🎉 ¡Búsqueda completada! Se encontraron datos relevantes y **{len(filas)}** registros.")
                 else:
-                    st.warning("No se encontraron registros que respondan a la consulta en este rango de mensajes.")
+                    st.info("Búsqueda completada.")
             except Exception as e:
                 st.error(f"Error durante el procesamiento: {e}")
 
-        if "custom_results_df" in st.session_state:
-            df_custom = st.session_state["custom_results_df"]
-            st.dataframe(df_custom, use_container_width=True)
+        if "custom_result_full" in st.session_state:
+            res_data = st.session_state["custom_result_full"]
+            direct_ans = str(res_data.get("respuesta_directa", "")).strip()
+            filas = res_data.get("filas", [])
 
-            col_d1, col_d2 = st.columns(2)
-            with col_d1:
-                buf = io.BytesIO()
-                with pd.ExcelWriter(buf, engine="openpyxl") as writer:
-                    df_custom.to_excel(writer, index=False, sheet_name="Resultados")
-                st.download_button(
-                    "📥 Descargar Resultados en Excel (.xlsx)",
-                    data=buf.getvalue(),
-                    file_name="extraccion_whatsapp_personalizada.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                )
-            with col_d2:
-                csv_b = df_custom.to_csv(index=False).encode("utf-8-sig")
-                st.download_button("📥 Descargar Resultados en CSV", data=csv_b, file_name="extraccion_whatsapp_personalizada.csv", mime="text/csv")
+            if direct_ans:
+                st.markdown("### 💡 Respuesta y Conclusiones de la IA")
+                st.info(direct_ans)
+
+            if filas:
+                st.markdown("### 📊 Tabla Estructurada con Evidencias")
+                df_custom = pd.DataFrame(filas)
+                st.dataframe(df_custom, use_container_width=True)
+
+                col_d1, col_d2, col_d3 = st.columns(3)
+                with col_d1:
+                    buf = io.BytesIO()
+                    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+                        df_custom.to_excel(writer, index=False, sheet_name="Resultados_Totales")
+                        # Si hay chats de origen variados, agregar pestañas por chat
+                        if "chat_origen" in df_custom.columns:
+                            chats_in_custom = [c for c in df_custom["chat_origen"].dropna().unique() if str(c).strip()]
+                            if len(chats_in_custom) > 1:
+                                for c_val in chats_in_custom:
+                                    df_sub = df_custom[df_custom["chat_origen"] == c_val]
+                                    safe_name = re.sub(r'[\\/*?:\[\]]', '', str(c_val))[:30]
+                                    df_sub.to_excel(writer, index=False, sheet_name=safe_name)
+
+                    st.download_button(
+                        "📥 Descargar Excel (.xlsx)",
+                        data=buf.getvalue(),
+                        file_name="busqueda_ojoalchat.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    )
+                with col_d2:
+                    csv_b = df_custom.to_csv(index=False).encode("utf-8-sig")
+                    st.download_button("📥 Descargar CSV", data=csv_b, file_name="busqueda_ojoalchat.csv", mime="text/csv")
+                with col_d3:
+                    tsv_u = df_custom.to_csv(sep="\t", index=False)
+                    st.text_area("📋 Copiar y pegar a Excel / Google Sheets", tsv_u, height=70)
 
     # ----------------- TAB 2: RECOMENDADOS (GOOGLE SHEETS) -----------------
     with tab_recom:

@@ -14,8 +14,8 @@ class ChatMessage:
     def to_formatted_str(self) -> str:
         src = getattr(self, "source_chat", "")
         if src:
-            return f"[{src} | {self.date} {self.time}] {self.sender}: {self.text}"
-        return f"[{self.date} {self.time}] {self.sender}: {self.text}"
+            return f"[{src} | {self.date}, {self.time}] {self.sender}: {self.text}"
+        return f"[{self.date}, {self.time}] {self.sender}: {self.text}"
 
 class WhatsAppParser:
     # Formats:
@@ -69,13 +69,14 @@ class WhatsAppParser:
             match_dash = self.PATTERN_DASH.match(line_str) if not match_bracket else None
 
             if match_bracket:
-                p1 = match_bracket.group("p1")
-                p2 = match_bracket.group("p2")
-                # Detect which one is date and which is time
-                if "/" in p1 or "-" in p1 or "." in p1 and len(p1.split(".")) == 3:
-                    date, time = p1, p2
-                else:
+                p1 = match_bracket.group("p1").strip()
+                p2 = match_bracket.group("p2").strip()
+                # Un componente de hora siempre contiene ':' o mención de am/pm
+                is_p1_time = ":" in p1 or any(x in p1.lower() for x in ["am", "pm", "a. m.", "p. m.", "m."])
+                if is_p1_time:
                     time, date = p1, p2
+                else:
+                    date, time = p1, p2
                 
                 sender = match_bracket.group("sender").strip()
                 text = match_bracket.group("text").strip()

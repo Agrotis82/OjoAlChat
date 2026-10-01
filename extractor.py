@@ -30,7 +30,53 @@ def _clean_json_text(text: str) -> str:
         text = text[3:]
     if text.endswith("```"):
         text = text[:-3]
-    return text.strip()
+    text = text.strip()
+    match = re.search(r'(\{[\s\S]*\}|\[[\s\S]*\])', text)
+    if match:
+        return match.group(1).strip()
+    return text
+
+def normalize_dynamic_result(data: Any, default_chat: str = "") -> Dict[str, Any]:
+    """
+    Normaliza cualquier respuesta JSON devuelta por Gemini (lista directa de objetos,
+    objeto con clave 'filas', o con clave personalizada) garantizando que nunca
+    falle por formato inesperado.
+    """
+    filas: List[Dict[str, Any]] = []
+    respuesta_directa = ""
+    columnas: List[str] = []
+
+    if isinstance(data, list):
+        filas = [item for item in data if isinstance(item, dict)]
+    elif isinstance(data, dict):
+        respuesta_directa = str(data.get("respuesta_directa") or data.get("resumen") or "").strip()
+        for key in ["filas", "resultados", "datos", "registros", "items", "proveedores", "recomendaciones"]:
+            val = data.get(key)
+            if isinstance(val, list):
+                filas = [item for item in val if isinstance(item, dict)]
+                break
+
+        if not filas:
+            for k, val in data.items():
+                if isinstance(val, list) and val and isinstance(val[0], dict):
+                    filas = val
+                    break
+
+        columnas = data.get("columnas") or []
+
+    if filas and not columnas:
+        columnas = list(filas[0].keys())
+
+    if default_chat and filas:
+        for f in filas:
+            if not f.get("chat_origen") and not f.get("chat"):
+                f["chat_origen"] = default_chat
+
+    return {
+        "respuesta_directa": respuesta_directa,
+        "columnas": columnas,
+        "filas": filas
+    }
 
 def deduplicate_recommendations(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
@@ -205,33 +251,30 @@ class WhatsAppInsightExtractor:
             data = json.loads(_clean_json_text(response.text))
             return data.get("recomendados", [])
 
-    def extract_dynamic_query(self, messages_text: str, user_query: str) -> Dict[str, Any]:
+    def extract_dynamic_query(self, messages_text: str, user_query: str) -> Any:
         prompt = (
-            "Eres un asistente analista de inteligencia de datos para cualquier tipo de chat de WhatsApp "
-            "(reuniones de trabajo, colegio/padres, consorcio/vecinos, asados/eventos, compra/venta, reclamos, etc.).\n"
-            f"El usuario necesita consultar o buscar lo siguiente en las conversaciones: \"{user_query}\".\n\n"
-            "Instrucciones:\n"
-            "1. Redacta una 'respuesta_directa' en español: un texto conversacional, claro y completo que responda directamente "
-            "la pregunta del usuario (quién dijo qué, fechas, precios, acuerdos, deudas o conclusiones encontradas).\n"
-            "2. Define entre 4 y 7 nombres de columnas claras y elegantes para estructurar en tabla los registros encontrados.\n"
-            "3. En cada registro ('filas'), completa las columnas correspondientes y agrega siempre 'cita_o_fuente' (fragmento/autor/fecha) "
-            "y 'chat_origen' (si el mensaje incluye el nombre del grupo entre corchetes).\n"
-            "4. Si no hay datos sobre la consulta, indica en 'respuesta_directa' que no se encontró información y deja 'filas' vacía.\n\n"
-            "Debes responder UNICAMENTE con un objeto JSON con la siguiente estructura exacta:\n"
+            "Eres un analista experto en datos y mensajes de WhatsApp.\n"
+            "Tu tarea es analizar minuciosamente el historial de mensajes y cumplir rigurosamente con la solicitud del usuario.\n\n"
+            f"SOLICITUD Y CRITERIOS DEL USUARIO:\n{user_query}\n\n"
+            "INSTRUCCIONES:\n"
+            "1. Cumple de forma estricta con TODOS los filtros, condiciones, oficios, exclusiones y nombres de columnas pedidos por el usuario.\n"
+            "2. Si el usuario indicó nombres exactos de columnas (ej: proveedor_nombre, rubro, fecha, recomienda, etc.), "
+            "UTILIZA EXACTAMENTE esos nombres como claves de cada objeto en la lista 'filas'.\n"
+            "3. En 'respuesta_directa', redacta un resumen claro en español de lo que encontraste (quiénes, qué dijeron, acuerdos o recomendaciones).\n"
+            "4. En 'filas', agrega todas las ocurrencias o filas encontradas que cumplan con la solicitud del usuario.\n"
+            "5. Si no hay ocurrencias que cumplan los criterios en estos mensajes, devuelve 'filas': [] y en 'respuesta_directa' aclara brevemente que no hubo menciones.\n\n"
+            "Responde en formato JSON con la siguiente estructura (o directamente un array de objetos JSON con las columnas solicitadas):\n"
             "{\n"
-            '  "respuesta_directa": "Texto explicando detalladamente la respuesta al usuario...",\n'
-            '  "columnas": ["Columna1", "Columna2", "Columna3", "chat_origen", "cita_o_fuente"],\n'
+            '  "respuesta_directa": "Resumen de lo encontrado...",\n'
+            '  "columnas": ["col1", "col2", ...],\n'
             '  "filas": [\n'
             '    {\n'
-            '      "Columna1": "valor...",\n'
-            '      "Columna2": "valor...",\n'
-            '      "Columna3": "valor...",\n'
-            '      "chat_origen": "nombre del grupo...",\n'
-            '      "cita_o_fuente": "fecha o mensaje..."\n'
+            '      "col1": "valor...",\n'
+            '      "col2": "valor..."\n'
             '    }\n'
             '  ]\n'
             "}\n\n"
-            f"Historial de mensajes:\n{messages_text}"
+            f"HISTORIAL DE MENSAJES A ANALIZAR:\n{messages_text}"
         )
 
         config = types.GenerateContentConfig(
@@ -330,6 +373,7 @@ class WhatsAppInsightExtractor:
         all_filas: List[Dict[str, Any]] = []
         unified_cols: List[str] = []
         respuestas_parciales: List[str] = []
+        batch_errors: List[str] = []
 
         for idx, chunk in enumerate(chunks):
             chunk_num = idx + 1
@@ -352,21 +396,21 @@ class WhatsAppInsightExtractor:
             default_chat = list(chunk_chats)[0] if len(chunk_chats) == 1 else ""
 
             try:
-                res = self.extract_dynamic_query(chunk_text, user_query)
-                direct = str(res.get("respuesta_directa", "")).strip()
-                if direct and not any(term in direct.lower() for term in ["no se encontró", "no hay información", "no encontré", "no se encontraron"]):
+                raw_res = self.extract_dynamic_query(chunk_text, user_query)
+                norm = normalize_dynamic_result(raw_res, default_chat=default_chat)
+                direct = str(norm.get("respuesta_directa", "")).strip()
+                if direct and not any(term in direct.lower() for term in ["no se encontró", "no hay información", "no encontré", "no se encontraron", "no hubo menciones"]):
                     respuestas_parciales.append(direct)
 
-                cols = res.get("columnas", [])
-                filas = res.get("filas", [])
+                cols = norm.get("columnas", [])
+                filas = norm.get("filas", [])
                 if not unified_cols and cols:
                     unified_cols = cols
                 if filas:
-                    for f in filas:
-                        if not f.get("chat_origen") and default_chat:
-                            f["chat_origen"] = default_chat
                     all_filas.extend(filas)
             except Exception as e:
+                err_text = str(e)
+                batch_errors.append(f"Lote {chunk_num}: {err_text}")
                 print(f"[Aviso] Error en consulta dinámica lote {chunk_num}: {e}")
 
             pct_end = int((chunk_num / total_chunks) * 100)
@@ -384,8 +428,10 @@ class WhatsAppInsightExtractor:
             respuesta_final = "\n\n".join(respuestas_parciales)
         elif all_filas:
             respuesta_final = f"Se encontraron {len(all_filas)} registros relevantes en las conversaciones analizadas."
+        elif batch_errors:
+            respuesta_final = f"Ocurrió un error al procesar los mensajes con la IA: {batch_errors[0]}"
         else:
-            respuesta_final = "No se encontraron menciones ni datos relevantes sobre esa búsqueda en los mensajes analizados."
+            respuesta_final = "No se encontraron menciones ni datos relevantes que cumplan con todos los filtros y condiciones solicitadas en los mensajes analizados."
 
         return {
             "respuesta_directa": respuesta_final,

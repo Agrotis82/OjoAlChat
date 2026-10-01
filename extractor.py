@@ -3,7 +3,7 @@ import json
 import re
 import time
 import random
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from pydantic import BaseModel, Field
 from google import genai
 from google.genai import types
@@ -178,8 +178,11 @@ class WhatsAppInsightExtractor:
             http_options=types.HttpOptions(timeout=60000)
         )
         self.model = model or "gemini-2.5-flash"
+        self.last_models_used: List[str] = []
+        self.fallback_occurred: bool = False
 
-    def _generate_with_retry(self, contents: str, config: types.GenerateContentConfig, max_retries: int = 2) -> Any:
+    def _generate_with_retry(self, contents: str, config: types.GenerateContentConfig, max_retries: int = 2) -> Tuple[Any, str]:
+        # Jerarquía estricta de mayor calidad a menor (comienza siempre con el más nuevo y adecuado)
         active_models = ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.0-flash"]
         candidate_models = []
         if self.model and self.model in active_models:
@@ -189,6 +192,8 @@ class WhatsAppInsightExtractor:
                 candidate_models.append(m)
 
         model_errors = {}
+        first_candidate = candidate_models[0]
+
         for model_name in candidate_models:
             for attempt in range(max_retries):
                 try:
@@ -204,7 +209,9 @@ class WhatsAppInsightExtractor:
                         contents=contents,
                         config=call_config,
                     )
-                    return response
+                    if model_name != first_candidate:
+                        self.fallback_occurred = True
+                    return response, model_name
                 except Exception as e:
                     err_msg = str(e)
                     model_errors[f"{model_name}_intento_{attempt+1}"] = err_msg
@@ -214,16 +221,16 @@ class WhatsAppInsightExtractor:
                             wait_sec = 1.0 + random.uniform(0.2, 0.5)
                             time.sleep(wait_sec)
                         else:
-                            # Ante saturación/demanda, pasar de inmediato al siguiente modelo de fallback
+                            # Ante saturación/demanda, descender de inmediato al siguiente modelo de la jerarquía
                             break
                     else:
-                        # Si es error no transitorio, pasar de inmediato al siguiente modelo
+                        # Si es error no transitorio (ej: no soportado), pasar directo al siguiente modelo
                         break
 
         summary = "; ".join([f"{k}: {v[:120]}" for k, v in model_errors.items()])
         raise RuntimeError(f"Error procesando con la IA ({summary})")
 
-    def extract_recommendations(self, messages_text: str) -> List[Dict[str, Any]]:
+    def extract_recommendations(self, messages_text: str) -> Tuple[List[Dict[str, Any]], str]:
         prompt = (
             "Eres un analista experto en extraer recomendaciones de servicios y personas a partir de chats de WhatsApp.\n"
             "Tu objetivo es encontrar TODAS las personas, profesionales, tecnicos o comercios recomendados en la conversacion.\n"
@@ -252,19 +259,19 @@ class WhatsAppInsightExtractor:
                 response_mime_type="application/json",
                 response_schema=RecommendationBatch,
             )
-            response = self._generate_with_retry(prompt, config)
+            response, model_used = self._generate_with_retry(prompt, config)
             data = json.loads(_clean_json_text(response.text))
-            return data.get("recomendados", [])
+            return data.get("recomendados", []), model_used
         except Exception:
             # Fallback sin response_schema estricto para evitar restricciones de Developer API
             config = types.GenerateContentConfig(
                 response_mime_type="application/json",
             )
-            response = self._generate_with_retry(prompt, config)
+            response, model_used = self._generate_with_retry(prompt, config)
             data = json.loads(_clean_json_text(response.text))
-            return data.get("recomendados", [])
+            return data.get("recomendados", []), model_used
 
-    def extract_dynamic_query(self, messages_text: str, user_query: str) -> Any:
+    def extract_dynamic_query(self, messages_text: str, user_query: str) -> Tuple[Any, str]:
         prompt = (
             "Eres un analista experto en datos y mensajes de WhatsApp.\n"
             "Tu tarea es analizar minuciosamente el historial de mensajes y cumplir rigurosamente con la solicitud del usuario.\n\n"
@@ -294,8 +301,8 @@ class WhatsAppInsightExtractor:
         config = types.GenerateContentConfig(
             response_mime_type="application/json",
         )
-        response = self._generate_with_retry(prompt, config)
-        return json.loads(_clean_json_text(response.text))
+        response, model_used = self._generate_with_retry(prompt, config)
+        return json.loads(_clean_json_text(response.text)), model_used
 
     def extract_recommendations_batched(
         self,
@@ -316,17 +323,20 @@ class WhatsAppInsightExtractor:
         total_chunks = len(chunks)
         
         all_recommendations: List[Dict[str, Any]] = []
+        models_used: List[str] = []
 
         for idx, chunk in enumerate(chunks):
             chunk_num = idx + 1
             pct_start = int((idx / total_chunks) * 100)
+            curr_model = models_used[-1] if models_used else self.model
             if progress_callback:
                 progress_callback(
                     idx,
                     total_chunks,
                     pct_start,
                     len(all_recommendations),
-                    f"Analizando lote {chunk_num} de {total_chunks} ({len(chunk)} mensajes)..."
+                    f"Analizando lote {chunk_num} de {total_chunks} ({len(chunk)} mensajes)...",
+                    curr_model
                 )
 
             chunk_text = "\n".join([
@@ -339,7 +349,9 @@ class WhatsAppInsightExtractor:
             default_chat = list(chunk_chats)[0] if len(chunk_chats) == 1 else ""
 
             try:
-                batch_results = self.extract_recommendations(chunk_text)
+                batch_results, used_model = self.extract_recommendations(chunk_text)
+                if used_model and used_model not in models_used:
+                    models_used.append(used_model)
                 if batch_results:
                     for br in batch_results:
                         if not br.get("chat_origen") and default_chat:
@@ -349,15 +361,18 @@ class WhatsAppInsightExtractor:
                 print(f"[Aviso] Error procesando lote {chunk_num}/{total_chunks}: {e}")
 
             pct_end = int((chunk_num / total_chunks) * 100)
+            latest_model = models_used[-1] if models_used else self.model
             if progress_callback:
                 progress_callback(
                     chunk_num,
                     total_chunks,
                     pct_end,
                     len(all_recommendations),
-                    f"Lote {chunk_num} de {total_chunks} completado."
+                    f"Lote {chunk_num} de {total_chunks} completado.",
+                    latest_model
                 )
 
+        self.last_models_used = models_used
         if deduplicate:
             return deduplicate_recommendations(all_recommendations)
         return all_recommendations
@@ -377,7 +392,8 @@ class WhatsAppInsightExtractor:
             return {
                 "respuesta_directa": "No hay mensajes cargados para analizar.",
                 "columnas": [],
-                "filas": []
+                "filas": [],
+                "modelos_usados": []
             }
 
         total_msgs = len(messages)
@@ -388,17 +404,20 @@ class WhatsAppInsightExtractor:
         unified_cols: List[str] = []
         respuestas_parciales: List[str] = []
         batch_errors: List[str] = []
+        models_used: List[str] = []
 
         for idx, chunk in enumerate(chunks):
             chunk_num = idx + 1
             pct_start = int((idx / total_chunks) * 100)
+            curr_model = models_used[-1] if models_used else self.model
             if progress_callback:
                 progress_callback(
                     idx,
                     total_chunks,
                     pct_start,
                     len(all_filas),
-                    f"Analizando lote {chunk_num} de {total_chunks} ({len(chunk)} mensajes)..."
+                    f"Analizando lote {chunk_num} de {total_chunks} ({len(chunk)} mensajes)...",
+                    curr_model
                 )
 
             chunk_text = "\n".join([
@@ -410,7 +429,9 @@ class WhatsAppInsightExtractor:
             default_chat = list(chunk_chats)[0] if len(chunk_chats) == 1 else ""
 
             try:
-                raw_res = self.extract_dynamic_query(chunk_text, user_query)
+                raw_res, used_model = self.extract_dynamic_query(chunk_text, user_query)
+                if used_model and used_model not in models_used:
+                    models_used.append(used_model)
                 norm = normalize_dynamic_result(raw_res, default_chat=default_chat)
                 direct = str(norm.get("respuesta_directa", "")).strip()
                 if direct and not any(term in direct.lower() for term in ["no se encontró", "no hay información", "no encontré", "no se encontraron", "no hubo menciones"]):
@@ -428,14 +449,18 @@ class WhatsAppInsightExtractor:
                 print(f"[Aviso] Error en consulta dinámica lote {chunk_num}: {e}")
 
             pct_end = int((chunk_num / total_chunks) * 100)
+            latest_model = models_used[-1] if models_used else self.model
             if progress_callback:
                 progress_callback(
                     chunk_num,
                     total_chunks,
                     pct_end,
                     len(all_filas),
-                    f"Lote {chunk_num} de {total_chunks} completado."
+                    f"Lote {chunk_num} de {total_chunks} completado.",
+                    latest_model
                 )
+
+        self.last_models_used = models_used
 
         # Sintetizar respuesta directa conservando datos incluso si un lote aislado falló
         if all_filas:
@@ -456,5 +481,6 @@ class WhatsAppInsightExtractor:
         return {
             "respuesta_directa": respuesta_final,
             "columnas": unified_cols,
-            "filas": all_filas
+            "filas": all_filas,
+            "modelos_usados": models_used
         }

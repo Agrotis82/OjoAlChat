@@ -54,12 +54,19 @@ with st.sidebar:
         st.warning("⚠️ Ingresa una API Key para habilitar la extracción con IA.")
         st.markdown("[👉 Obtener API Key gratis en Google AI Studio](https://aistudio.google.com/apikey)")
     
-    model_choice = st.selectbox(
+    model_options = [
+        "⚡ Automático (Más nuevo primero: Gemini 2.5 Flash ➔ Fallbacks)",
+        "gemini-2.5-flash",
+        "gemini-2.5-flash-lite",
+        "gemini-2.0-flash"
+    ]
+    model_selection = st.selectbox(
         "Modelo de IA",
-        ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.0-flash"],
+        model_options,
         index=0,
-        help="gemini-2.5-flash es el modelo más reciente y preciso de Google. gemini-2.5-flash-lite es ultra rápido."
+        help="En modo Automático, OjoAlChat consulta primero el modelo más nuevo y potente (Gemini 2.5 Flash). Si Google presenta saturación de demanda, desciende automáticamente a Flash-Lite o 2.0 sin detener la búsqueda."
     )
+    model_choice = "gemini-2.5-flash" if "Automático" in model_selection else model_selection
     
     st.divider()
     st.subheader("📁 Carga de Chats")
@@ -261,10 +268,11 @@ else:
                 prog_bar_u = st.progress(0, text="Iniciando búsqueda inteligente...")
                 status_box_u = st.empty()
 
-                def update_progress_u(step, total, pct, count, msg):
+                def update_progress_u(step, total, pct, count, msg, current_model=""):
                     current_lote = min(step + 1, total) if pct < 100 else total
                     prog_bar_u.progress(min(pct, 100), text=f"Progreso: {pct}% — Lote {current_lote} de {total}")
-                    status_box_u.info(f"⏳ {msg} | Registros detectados hasta ahora: **{count}**")
+                    tag_model = f" | 🧠 Modelo IA: `{current_model}`" if current_model else ""
+                    status_box_u.info(f"⏳ {msg}{tag_model} | Registros detectados hasta ahora: **{count}**")
 
                 extractor = WhatsAppInsightExtractor(api_key=api_key, model=model_choice)
                 result = extractor.extract_dynamic_query_batched(
@@ -278,11 +286,22 @@ else:
                 status_box_u.empty()
 
                 st.session_state["custom_result_full"] = result
+
+                # Detectar modelo(s) utilizados
+                used_models = result.get("modelos_usados") or extractor.last_models_used or [model_choice]
+                used_models_str = ", ".join([f"`{m}`" for m in used_models])
+                if extractor.fallback_occurred or (len(used_models) > 1) or (used_models and used_models[0] != model_choice):
+                    model_note = " *(se activó respaldo por saturación momentánea en el modelo inicial)*"
+                else:
+                    model_note = ""
+
+                st.session_state["custom_model_display"] = f"{used_models_str}{model_note}"
+
                 filas = result.get("filas", [])
                 if filas:
-                    st.success(f"🎉 ¡Búsqueda completada! Se encontraron datos relevantes y **{len(filas)}** registros.")
+                    st.success(f"🎉 ¡Búsqueda completada con **{used_models_str}**{model_note}! Se encontraron datos relevantes y **{len(filas)}** registros.")
                 else:
-                    st.info("Búsqueda completada.")
+                    st.info(f"Búsqueda completada con **{used_models_str}**{model_note}.")
             except Exception as e:
                 st.error(f"Error durante el procesamiento: {e}")
 
@@ -290,13 +309,18 @@ else:
             res_data = st.session_state["custom_result_full"]
             direct_ans = str(res_data.get("respuesta_directa", "")).strip()
             filas = res_data.get("filas", [])
+            used_models_info = st.session_state.get("custom_model_display", "")
 
             if direct_ans:
                 st.markdown("### 💡 Respuesta y Conclusiones de la IA")
+                if used_models_info:
+                    st.caption(f"🧠 **Procesado con modelo de IA:** {used_models_info}")
                 st.info(direct_ans)
 
             if filas:
                 st.markdown("### 📊 Tabla Estructurada con Evidencias")
+                if used_models_info and not direct_ans:
+                    st.caption(f"🧠 **Procesado con modelo de IA:** {used_models_info}")
                 df_custom = pd.DataFrame(filas)
                 st.dataframe(df_custom, use_container_width=True)
 
@@ -375,10 +399,11 @@ else:
                 prog_bar_r = st.progress(0, text="Iniciando extracción inteligente en lotes...")
                 status_box_r = st.empty()
 
-                def update_progress_r(step, total, pct, count, msg):
+                def update_progress_r(step, total, pct, count, msg, current_model=""):
                     current_lote = min(step + 1, total) if pct < 100 else total
                     prog_bar_r.progress(min(pct, 100), text=f"Progreso: {pct}% — Lote {current_lote} de {total}")
-                    status_box_r.info(f"⏳ {msg} | Menciones detectadas hasta el momento: **{count}**")
+                    tag_model = f" | 🧠 Modelo IA: `{current_model}`" if current_model else ""
+                    status_box_r.info(f"⏳ {msg}{tag_model} | Menciones detectadas hasta el momento: **{count}**")
 
                 extractor = WhatsAppInsightExtractor(api_key=api_key, model=model_choice)
                 results_raw = extractor.extract_recommendations_batched(
@@ -391,14 +416,23 @@ else:
                 prog_bar_r.empty()
                 status_box_r.empty()
 
+                used_models = extractor.last_models_used or [model_choice]
+                used_models_str = ", ".join([f"`{m}`" for m in used_models])
+                if extractor.fallback_occurred or (len(used_models) > 1) or (used_models and used_models[0] != model_choice):
+                    model_note = " *(se activó respaldo por saturación momentánea en el modelo inicial)*"
+                else:
+                    model_note = ""
+
+                st.session_state["recom_model_display"] = f"{used_models_str}{model_note}"
+
                 if results_raw:
                     st.session_state["raw_recommendations"] = results_raw
                     # Generar df inicial deduplicado para mantener compatibilidad
                     df_init = pd.DataFrame(extractor_module.deduplicate_recommendations(results_raw))
                     st.session_state["recom_df"] = df_init
-                    st.success(f"🎉 ¡Extracción completada! Se detectaron **{len(results_raw)}** menciones individuales y **{len(df_init)}** proveedores únicos.")
+                    st.success(f"🎉 ¡Extracción completada con **{used_models_str}**{model_note}! Se detectaron **{len(results_raw)}** menciones individuales y **{len(df_init)}** proveedores únicos.")
                 else:
-                    st.warning("No se encontraron recomendaciones en los mensajes analizados.")
+                    st.warning(f"No se encontraron recomendaciones en los mensajes analizados (Modelo: {used_models_str}).")
             except Exception as e:
                 st.error(f"Error: {e}")
 
@@ -409,6 +443,9 @@ else:
                 raw_data = st.session_state["recom_df"].to_dict(orient="records")
 
             st.divider()
+            recom_model_info = st.session_state.get("recom_model_display", "")
+            if recom_model_info:
+                st.caption(f"🧠 **Extracción realizada con modelo de IA:** {recom_model_info}")
             st.markdown("### 👁️ Opciones de Vista y Separación de Datos")
 
             col_v1, col_v2, col_v3 = st.columns([2, 2, 2])

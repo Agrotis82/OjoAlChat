@@ -4,10 +4,10 @@
  * ====================================================================
  * 
  * NOVEDADES:
- * - Selección de RANGO DE FECHAS (Desde / Hasta) o botones rápidos (1 mes, 3 meses, Todo).
- * - AUTO-STOP: Sube solo por el chat y se DETIENE AUTOMÁTICAMENTE cuando
- *   llega a la fecha elegida, descargando el archivo sin que tengas que tocar nada.
- * - Detección automática del inicio del chat si no hay más mensajes antiguos.
+ * - Detecta AUTOMÁTICAMENTE el NOMBRE DEL GRUPO o contacto y lo incluye en el archivo.
+ * - Rango de fechas con calendario (Desde / Hasta) y botones rápidos (1 mes, 3 meses, Todo).
+ * - AUTO-STOP: Se detiene y descarga automáticamente cuando llega a la fecha solicitada.
+ * - Limpieza de caracteres no válidos para el nombre de archivo en Windows/Mac.
  * 
  * INSTRUCCIONES:
  * 1. Abre WhatsApp Web (web.whatsapp.com) y entra al grupo/chat.
@@ -28,7 +28,36 @@
         return;
     }
 
-    // 3. Buscar contenedor con scroll
+    // 3. Detectar nombre del grupo o contacto
+    function getChatTitle() {
+        const header = main.querySelector('header');
+        if (!header) return 'chat';
+        const titleSpan = header.querySelector('span[title]') || 
+                          header.querySelector('div[role="button"] span') || 
+                          header.querySelector('h2');
+        let title = '';
+        if (titleSpan) {
+            title = titleSpan.getAttribute('title') || titleSpan.innerText || '';
+        }
+        if (!title) {
+            const firstLine = header.innerText.split('\n')[0] || '';
+            title = firstLine.trim();
+        }
+        return title.trim() || 'chat';
+    }
+
+    function sanitizeFilename(name) {
+        return name
+            .replace(/[\/\\?%*:|"<>]/g, '')   // Quitar caracteres prohibidos en Windows
+            .replace(/\s+/g, '_')             // Reemplazar espacios por guiones bajos
+            .replace(/_+/g, '_')              // Evitar guiones dobles
+            .slice(0, 40);                    // Limitar largo
+    }
+
+    const rawChatName = getChatTitle();
+    const cleanChatName = sanitizeFilename(rawChatName);
+
+    // 4. Buscar contenedor con scroll
     function getScrollContainer() {
         for (const el of main.querySelectorAll('*')) {
             const style = window.getComputedStyle(el);
@@ -49,10 +78,9 @@
     const today = new Date();
     const oneMonthAgo = new Date();
     oneMonthAgo.setDate(today.getDate() - 30);
-
     const formatDateInput = d => d.toISOString().slice(0, 10);
 
-    // 4. Crear interfaz flotante moderna
+    // 5. Crear interfaz flotante
     const panel = document.createElement('div');
     panel.id = 'ojoai-panel';
     panel.style.cssText = `
@@ -72,28 +100,33 @@
     `;
 
     panel.innerHTML = `
-        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
             <div style="font-weight:bold; font-size:15px; color:#00a884; display:flex; align-items:center; gap:6px;">
                 <span>👁️ OjoAlChat</span>
-                <span style="font-size:11px; background:#005c4b; color:#25d366; padding:2px 6px; border-radius:10px;">Auto-Extractor</span>
+                <span style="font-size:10px; background:#005c4b; color:#25d366; padding:2px 6px; border-radius:10px;">Auto-Extractor</span>
             </div>
             <button id="ojo-btn-close" style="background:none; border:none; color:#8696a0; cursor:pointer; font-size:16px;">✖</button>
         </div>
 
-        <div style="margin-bottom:10px;">
-            <label style="display:block; font-size:11px; color:#8696a0; margin-bottom:3px;">📅 DESDE (Fecha límite hacia atrás):</label>
+        <div style="background:#182229; padding:6px 10px; border-radius:6px; margin-bottom:10px; border:1px solid #222e35;">
+            <span style="color:#8696a0; font-size:11px;">Grupo / Chat detectado:</span>
+            <div style="font-weight:bold; color:#53bdeb; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${rawChatName}</div>
+        </div>
+
+        <div style="margin-bottom:8px;">
+            <label style="display:block; font-size:11px; color:#8696a0; margin-bottom:3px;">📅 DESDE (Límite hacia atrás):</label>
             <input type="date" id="ojo-date-from" value="${formatDateInput(oneMonthAgo)}" style="width:100%; background:#202c33; color:#e9edef; border:1px solid #2a3942; border-radius:6px; padding:6px 8px; box-sizing:border-box;">
         </div>
 
         <div style="margin-bottom:10px;">
-            <label style="display:block; font-size:11px; color:#8696a0; margin-bottom:3px;">📅 HASTA (Fecha más reciente):</label>
+            <label style="display:block; font-size:11px; color:#8696a0; margin-bottom:3px;">📅 HASTA (Más reciente):</label>
             <input type="date" id="ojo-date-to" value="${formatDateInput(today)}" style="width:100%; background:#202c33; color:#e9edef; border:1px solid #2a3942; border-radius:6px; padding:6px 8px; box-sizing:border-box;">
         </div>
 
         <div style="display:flex; gap:6px; margin-bottom:12px;">
             <button id="ojo-quick-1m" style="flex:1; background:#202c33; color:#53bdeb; border:1px solid #2a3942; padding:4px; border-radius:6px; font-size:11px; cursor:pointer;">1 Mes</button>
             <button id="ojo-quick-3m" style="flex:1; background:#202c33; color:#53bdeb; border:1px solid #2a3942; padding:4px; border-radius:6px; font-size:11px; cursor:pointer;">3 Meses</button>
-            <button id="ojo-quick-all" style="flex:1; background:#202c33; color:#53bdeb; border:1px solid #2a3942; padding:4px; border-radius:6px; font-size:11px; cursor:pointer;">Todo el chat</button>
+            <button id="ojo-quick-all" style="flex:1; background:#202c33; color:#53bdeb; border:1px solid #2a3942; padding:4px; border-radius:6px; font-size:11px; cursor:pointer;">Todo</button>
         </div>
 
         <div style="background:#202c33; border-radius:8px; padding:10px; margin-bottom:12px; font-size:12px;">
@@ -105,7 +138,7 @@
                 <span style="color:#8696a0;">Fecha más antigua leída:</span>
                 <span id="ojo-oldest-date" style="font-weight:bold; color:#53bdeb;">-</span>
             </div>
-            <div id="ojo-status" style="margin-top:6px; font-size:11px; color:#ffd279; text-align:center;">Esperando inicio...</div>
+            <div id="ojo-status" style="margin-top:6px; font-size:11px; color:#ffd279; text-align:center;">Listo para iniciar</div>
         </div>
 
         <div style="display:flex; flex-direction:column; gap:6px;">
@@ -116,8 +149,7 @@
 
     document.body.appendChild(panel);
 
-    // 5. Función para parsear fecha del mensaje
-    // Soporta: [hh:mm, dd/mm/aaaa], [dd/mm/aaaa, hh:mm], etc.
+    // 6. Parser de fechas
     function parseMessageDate(preText) {
         if (!preText) return null;
         const match = preText.match(/(\d{1,2})[\/\.-](\d{1,2})[\/\.-](\d{2,4})/);
@@ -161,7 +193,7 @@
             document.getElementById('ojo-oldest-date').innerText = oldestDateFound.toLocaleDateString();
         }
 
-        // Detectar si no hay más mensajes cargando (llegó al inicio del grupo)
+        // Chequear si se detuvo el scroll (fin de historial)
         if (messagesMap.size === lastMessagesTotal) {
             consecutiveSameCount++;
         } else {
@@ -169,13 +201,13 @@
             lastMessagesTotal = messagesMap.size;
         }
 
-        // Condición 1: Llegó a la fecha límite requerida
+        // Condición 1: Llegó a la fecha límite hacia atrás
         if (targetFromDate && oldestDateFound && oldestDateFound <= targetFromDate) {
-            finishAndDownload(targetFromDate, targetToDate, "¡Fecha objetivo alcanzada!");
+            finishAndDownload(targetFromDate, targetToDate, "¡Fecha alcanzada!");
             return;
         }
 
-        // Condición 2: Llegó al inicio histórico del chat (sin cambios tras 6 intentos)
+        // Condición 2: Llegó al inicio del chat
         if (consecutiveSameCount >= 6) {
             finishAndDownload(targetFromDate, targetToDate, "¡Inicio del chat alcanzado!");
             return;
@@ -183,7 +215,6 @@
     }
 
     function scrollStep() {
-        // Provocar scroll arriba con rebote para forzar a WhatsApp a pedir más mensajes
         scrollContainer.scrollTop = 0;
         setTimeout(() => {
             if (scrollContainer.scrollTop === 0) scrollContainer.scrollTop = 40;
@@ -197,7 +228,6 @@
         document.getElementById('ojo-status').innerText = `✔️ ${reason} Descargando...`;
         document.getElementById('ojo-status').style.color = '#25d366';
 
-        // Filtrar mensajes dentro del rango solicitado
         const filtered = [];
         messagesMap.forEach(item => {
             if (!item.date) {
@@ -215,12 +245,14 @@
             return;
         }
 
-        const blob = new Blob([filtered.join('\n\n')], { type: 'text/plain;charset=utf-8' });
-        const a = document.createElement('a');
         const fromStr = fromDate ? fromDate.toISOString().slice(0,10) : 'inicio';
         const toStr = toDate ? toDate.toISOString().slice(0,10) : 'hoy';
+        const finalFilename = `chat_${cleanChatName}_${fromStr}_a_${toStr}.txt`;
+
+        const blob = new Blob([filtered.join('\n\n')], { type: 'text/plain;charset=utf-8' });
+        const a = document.createElement('a');
         a.href = URL.createObjectURL(blob);
-        a.download = `chat_whatsapp_${fromStr}_a_${toStr}.txt`;
+        a.download = finalFilename;
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);

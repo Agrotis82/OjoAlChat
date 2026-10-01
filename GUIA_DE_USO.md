@@ -30,18 +30,13 @@ Dado que WhatsApp Web no tiene botón oficial de exportar, usamos el script auto
    * Abre el archivo `descargar_chat_whatsapp_web.js` y copia todo su contenido.
    * Pégalo en la consola de WhatsApp Web y presiona **Enter**.
 
-5. **Panel flotante de descarga**:
-   * Verás aparecer un recuadro oscuro arriba a la derecha de la pantalla:
-     ```text
-     ┌──────────────────────────────────────────────┐
-     │ Extractor de WhatsApp                        │
-     │ Mensajes recopilados: 254                    │
-     │ [ Detener y Descargar .txt ]   [ Cancelar ]  │
-     └──────────────────────────────────────────────┘
-     ```
-   * El chat irá subiendo solo en el historial mientras el contador aumenta.
-   * Cuando consideres que ya cargó suficiente historial (o llegue al inicio del grupo), haz clic en el botón verde **"Detener y Descargar .txt"**.
-   * Se descargará automáticamente un archivo con el formato: `chat_whatsapp_AAAA-MM-DD.txt` en tu carpeta de *Descargas*.
+5. **Panel flotante de descarga multi-chat**:
+   * Verás aparecer un panel flotante arriba a la derecha de la pantalla:
+     * **Detecta automáticamente el grupo actual** y nombra el archivo en consecuencia.
+     * Puedes configurar un rango de fechas o dejarlo desde el inicio hasta hoy.
+     * Al terminar o pulsar detener, aparecerá un botón verde grande: **`[📥 DESCARGAR ARCHIVO (X msgs)]`** que puedes presionar directamente para guardar el archivo `.txt` de forma inmediata (evitando bloqueos automáticos de Chrome/Edge).
+     * También incluye un botón **`[📋 Copiar mensajes al portapapeles]`** como alternativa rápida.
+     * **Multi-chat en la misma sesión**: Sin recargar la página, puedes hacer clic en otro grupo de WhatsApp en tu lista de chats, el panel actualizará el nombre automáticamente y podrás descargar ese otro grupo.
 
 ---
 
@@ -65,11 +60,16 @@ Si prefieres hacerlo desde tu teléfono móvil sin usar la consola:
 
 ---
 
-## ¿Cómo analizar el chat descargado con OjoAlChat?
+## ¿Cómo analizar uno o varios chats con OjoAlChat?
 
-Una vez que tienes tu archivo `.txt`, puedes usar **OjoAlChat**:
+Una vez que tienes tus archivos `.txt`:
 
 1. Entra a la aplicación web de **OjoAlChat**.
-2. En la barra lateral izquierda, sube el archivo `.txt`.
-3. Escribe cualquier búsqueda en lenguaje natural (ej: *"recomienden plomeros"*, *"precios de alquileres"*, *"reclamos de luz"* o *"personas que vendan comida"*).
-4. La IA generará la tabla automáticamente y podrás descargar los resultados en **Excel** o **CSV**.
+2. En la barra lateral izquierda, en **"Sube uno o varios chats (.txt)"**, haz clic en **Browse files**.
+   * **Análisis Multi-Chat**: Puedes mantener presionada la tecla `Ctrl` (o `Cmd` en Mac) y seleccionar **varios archivos `.txt` a la vez** (ej: *Ventas y Proveedores*, *Vecinas Molineras*, *Seguridad*).
+3. OjoAlChat consolidará todos los mensajes, identificando el chat de procedencia de cada uno.
+4. Puedes:
+   * **Búsqueda Universal**: Hacer preguntas transversales a todos los chats (*"comida y viandas"*, *"alquileres"*, *"profesores particulares"*, *"electricistas y plomeros"*).
+   * **Planilla de Proveedores**: Generar la planilla de recomendados con las 8 columnas oficiales para Google Sheets (y columna de chat de procedencia).
+   * **Visor Limpio**: Filtrar el historial por grupo específico o participante.
+5. Descarga los resultados consolidados en **Excel (.xlsx)**, **CSV** o copia directamente al portapapeles para pegar en tu Google Sheet.

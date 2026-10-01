@@ -3,19 +3,13 @@
  * EXTRACTOR MULTI-CHAT DE WHATSAPP WEB - OjoAlChat (OjoAI)
  * ====================================================================
  * 
- * NOVEDADES (SESIÓN CONTINUA MULTI-CHAT):
- * - Permite descargar múltiples chats en la misma sesión sin cerrar ni volver a pegar el código.
- * - DETECCIÓN AUTOMÁTICA AL CAMBIAR DE CHAT: Al hacer clic en otro grupo en la barra
- *   izquierda de WhatsApp, el panel detecta el nuevo grupo, reinicia los contadores
- *   y queda listo para volver a extraer en 1 clic.
- * - Nombre del archivo y cantidad de mensajes actualizados para cada chat.
- * - Botón de refresco manual "🔄 Detectar chat actual" por si cambiaste de pantalla.
- * 
- * INSTRUCCIONES:
- * 1. Abre WhatsApp Web y presiona F12 > Consola.
- * 2. Pega este código y presiona Enter una sola vez.
- * 3. El panel quedará activo: puedes extraer un chat, luego hacer clic en otro grupo
- *    y volver a extraer cuantas veces quieras.
+ * NOVEDADES:
+ * - SOLUCIONADO BLOQUEO DE DESCARGA: Chrome a veces bloquea descargas automáticas
+ *   generadas desde temporizadores (setInterval). Ahora, además de intentar la descarga
+ *   automática, muestra un BOTÓN VERDE GRANDE DIRECTO "📥 DESCARGAR ARCHIVO (X msgs)"
+ *   y un botón para copiar al portapapeles.
+ * - Limpieza de tildes y caracteres especiales en el nombre del archivo (ej. Trébol -> Trebol).
+ * - Soporte multi-chat continuo sin recargar la página.
  */
 
 (function() {
@@ -23,13 +17,14 @@
     const existingPanel = document.getElementById('ojoai-panel');
     if (existingPanel) existingPanel.remove();
 
-    // 2. Funciones auxiliares de sanitización y detección
+    // 2. Limpieza de nombres sin tildes para evitar errores de descarga en Windows/Navegadores
     function sanitizeFilename(name) {
         return name
-            .replace(/[\/\\?%*:|"<>]/g, '')
-            .replace(/\s+/g, '_')
+            .normalize("NFD").replace(/[\u0300-\u036f]/g, "") // Quitar tildes (é -> e)
+            .replace(/[\/\\?%*:|"<>]/g, '')                   // Quitar caracteres inválidos
+            .replace(/\s+/g, '_')                             // Espacios a guiones bajos
             .replace(/_+/g, '_')
-            .slice(0, 40);
+            .slice(0, 45);
     }
 
     function getChatTitle() {
@@ -52,7 +47,6 @@
         return null;
     }
 
-    // Fechas por defecto
     const today = new Date();
     const oneMonthAgo = new Date();
     oneMonthAgo.setDate(today.getDate() - 30);
@@ -84,7 +78,7 @@
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
             <div style="font-weight:bold; font-size:15px; color:#00a884; display:flex; align-items:center; gap:6px;">
                 <span>👁️ OjoAlChat</span>
-                <span style="font-size:10px; background:#005c4b; color:#25d366; padding:2px 6px; border-radius:10px;">Multi-Chat</span>
+                <span style="font-size:10px; background:#005c4b; color:#25d366; padding:2px 6px; border-radius:10px;">Auto-Extractor</span>
             </div>
             <button id="ojo-btn-close" style="background:none; border:none; color:#8696a0; cursor:pointer; font-size:16px;">✖</button>
         </div>
@@ -92,7 +86,7 @@
         <div style="background:#182229; padding:8px 10px; border-radius:8px; margin-bottom:10px; border:1px solid #222e35; display:flex; justify-content:space-between; align-items:center;">
             <div style="overflow:hidden; margin-right:8px;">
                 <span style="color:#8696a0; font-size:10px; text-transform:uppercase; letter-spacing:0.5px;">Chat Activo:</span>
-                <div id="ojo-detected-title" style="font-weight:bold; color:#53bdeb; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${initialTitle || 'Ninguno (Abre un chat)'}</div>
+                <div id="ojo-detected-title" style="font-weight:bold; color:#53bdeb; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${initialTitle || 'Ninguno'}</div>
             </div>
             <button id="ojo-btn-refresh-chat" title="Actualizar al chat actual" style="background:#202c33; color:#00a884; border:1px solid #2a3942; border-radius:6px; padding:4px 8px; cursor:pointer; font-size:11px;">🔄</button>
         </div>
@@ -130,21 +124,28 @@
             <div id="ojo-status" style="margin-top:6px; font-size:11px; color:#ffd279; text-align:center;">Listo para iniciar</div>
         </div>
 
-        <div style="display:flex; flex-direction:column; gap:6px;">
+        <div id="ojo-action-box" style="display:flex; flex-direction:column; gap:6px;">
             <button id="ojo-btn-start" style="background:#00a884; color:#111b21; border:none; padding:10px; border-radius:8px; font-weight:bold; cursor:pointer; font-size:13px;">▶ Iniciar Extracción Automática</button>
             <button id="ojo-btn-stop" style="background:#374248; color:#e9edef; border:none; padding:8px; border-radius:8px; cursor:pointer; font-size:12px; display:none;">⏹ Detener y Descargar ahora</button>
+        </div>
+
+        <!-- Contenedor para descarga directa en caso de bloqueo de navegador -->
+        <div id="ojo-download-ready-box" style="display:none; margin-top:10px; flex-direction:column; gap:6px;">
+            <a id="ojo-link-download" style="display:block; text-align:center; text-decoration:none; background:#25d366; color:#111b21; padding:10px; border-radius:8px; font-weight:bold; font-size:13px; box-shadow:0 4px 12px rgba(37,211,102,0.3); cursor:pointer;">📥 DESCARGAR ARCHIVO AHORA</a>
+            <button id="ojo-btn-copy" style="background:#202c33; color:#53bdeb; border:1px solid #2a3942; padding:7px; border-radius:8px; cursor:pointer; font-size:11px;">📋 Copiar mensajes al portapapeles</button>
         </div>
     `;
 
     document.body.appendChild(panel);
 
-    // 4. Variables de extracción
     const messagesMap = new Map();
     let oldestDateFound = null;
     let timer = null;
     let consecutiveSameCount = 0;
     let lastMessagesTotal = 0;
     let isExtracting = false;
+    let lastBlobUrl = null;
+    let lastExportedText = '';
 
     function parseMessageDate(preText) {
         if (!preText) return null;
@@ -155,7 +156,6 @@
         return new Date(parseInt(y), parseInt(m) - 1, parseInt(d));
     }
 
-    // 5. Función que detecta si el usuario hizo clic en otro chat
     function checkActiveChatChange() {
         const titleNow = getChatTitle();
         if (titleNow && titleNow !== currentChatTitle) {
@@ -163,7 +163,6 @@
             document.getElementById('ojo-detected-title').innerText = titleNow;
             document.getElementById('ojo-chat-name').value = sanitizeFilename(titleNow);
 
-            // Si no se está ejecutando una extracción, resetear contadores para el nuevo chat
             if (!isExtracting) {
                 resetCounters(`Listo para extraer: ${titleNow}`);
             }
@@ -179,9 +178,11 @@
         document.getElementById('ojo-oldest-date').innerText = '-';
         document.getElementById('ojo-status').innerText = statusMsg;
         document.getElementById('ojo-status').style.color = '#53bdeb';
+        document.getElementById('ojo-download-ready-box').style.display = 'none';
+        document.getElementById('ojo-btn-start').style.display = 'block';
+        document.getElementById('ojo-btn-stop').style.display = 'none';
     }
 
-    // Vigilante de cambio de chat cada 1 segundo
     const chatWatcher = setInterval(checkActiveChatChange, 1000);
 
     document.getElementById('ojo-btn-refresh-chat').onclick = () => {
@@ -275,31 +276,61 @@
             return;
         }
 
-        document.getElementById('ojo-status').innerText = `✔️ ${reason} (${filtered.length} msgs descargados).`;
-        document.getElementById('ojo-status').style.color = '#25d366';
-
         const inputName = document.getElementById('ojo-chat-name').value;
         const finalGroupName = sanitizeFilename(inputName || currentChatTitle || 'chat');
         const fromStr = fromDate ? fromDate.toISOString().slice(0,10) : 'inicio';
         const toStr = toDate ? toDate.toISOString().slice(0,10) : 'hoy';
         
         const finalFilename = `chat_${finalGroupName}_${filtered.length}msgs_${fromStr}_a_${toStr}.txt`;
+        lastExportedText = filtered.join('\n\n');
 
-        const blob = new Blob([filtered.join('\n\n')], { type: 'text/plain;charset=utf-8' });
-        const a = document.createElement('a');
-        a.href = URL.createObjectURL(blob);
-        a.download = finalFilename;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
+        const blob = new Blob([lastExportedText], { type: 'text/plain;charset=utf-8' });
+        if (lastBlobUrl) URL.revokeObjectURL(lastBlobUrl);
+        lastBlobUrl = URL.createObjectURL(blob);
 
-        // Volver a activar botón para poder extraer otro chat
-        setTimeout(() => {
-            document.getElementById('ojo-btn-start').style.display = 'block';
-            document.getElementById('ojo-btn-start').innerText = '▶ Extraer otro chat o rango';
-            document.getElementById('ojo-btn-stop').style.display = 'none';
-        }, 1000);
+        // 1. Configurar botón de descarga directa (infalible ante bloqueos del navegador)
+        const dlLink = document.getElementById('ojo-link-download');
+        dlLink.href = lastBlobUrl;
+        dlLink.download = finalFilename;
+        dlLink.innerText = `📥 DESCARGAR ARCHIVO (${filtered.length} msgs)`;
+        document.getElementById('ojo-download-ready-box').style.display = 'flex';
+
+        // 2. Intentar descarga automática
+        try {
+            const a = document.createElement('a');
+            a.href = lastBlobUrl;
+            a.download = finalFilename;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+        } catch (e) {
+            console.log("Descarga automática bloqueada por el navegador, usa el botón directo.");
+        }
+
+        document.getElementById('ojo-status').innerText = `✔️ ${reason} (${filtered.length} msgs listos)`;
+        document.getElementById('ojo-status').style.color = '#25d366';
+
+        document.getElementById('ojo-btn-start').style.display = 'block';
+        document.getElementById('ojo-btn-start').innerText = '▶ Extraer otro chat o rango';
+        document.getElementById('ojo-btn-stop').style.display = 'none';
     }
+
+    // Copiar al portapapeles como respaldo
+    document.getElementById('ojo-btn-copy').onclick = () => {
+        if (lastExportedText) {
+            navigator.clipboard.writeText(lastExportedText).then(() => {
+                alert("¡Texto copiado al portapapeles con éxito!");
+            }).catch(() => {
+                const ta = document.createElement('textarea');
+                ta.value = lastExportedText;
+                document.body.appendChild(ta);
+                ta.select();
+                document.execCommand('copy');
+                document.body.removeChild(ta);
+                alert("¡Texto copiado al portapapeles!");
+            });
+        }
+    };
 
     // Botones rápidos
     document.getElementById('ojo-quick-1m').onclick = () => {
@@ -326,7 +357,7 @@
             return;
         }
 
-        // Reiniciar memoria para esta extracción
+        document.getElementById('ojo-download-ready-box').style.display = 'none';
         messagesMap.clear();
         oldestDateFound = null;
         consecutiveSameCount = 0;
@@ -363,6 +394,7 @@
     document.getElementById('ojo-btn-close').onclick = () => {
         clearInterval(chatWatcher);
         if (timer) clearInterval(timer);
+        if (lastBlobUrl) URL.revokeObjectURL(lastBlobUrl);
         panel.remove();
     };
 })();

@@ -9,8 +9,11 @@ class ChatMessage:
     time: str
     sender: str
     text: str
+    source_chat: str = ""
 
     def to_formatted_str(self) -> str:
+        if self.source_chat:
+            return f"[{self.source_chat} | {self.date} {self.time}] {self.sender}: {self.text}"
         return f"[{self.date} {self.time}] {self.sender}: {self.text}"
 
 class WhatsAppParser:
@@ -49,7 +52,7 @@ class WhatsAppParser:
                 return True
         return False
 
-    def parse(self, raw_content: str) -> List[ChatMessage]:
+    def parse(self, raw_content: str, source_chat: str = "") -> List[ChatMessage]:
         lines = raw_content.splitlines()
         messages: List[ChatMessage] = []
         current_msg: Optional[ChatMessage] = None
@@ -82,7 +85,8 @@ class WhatsAppParser:
                     date=date,
                     time=time,
                     sender=sender,
-                    text=text
+                    text=text,
+                    source_chat=source_chat,
                 )
             elif match_dash:
                 date = match_dash.group("date")
@@ -98,7 +102,8 @@ class WhatsAppParser:
                     date=date,
                     time=time,
                     sender=sender,
-                    text=text
+                    text=text,
+                    source_chat=source_chat,
                 )
             else:
                 # Continuation of multiline message

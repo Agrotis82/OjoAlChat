@@ -15,6 +15,7 @@ class ProviderRecommendation(BaseModel):
     motivo: Optional[str] = Field(default="", description="Palabras de recomendacion, calidad o motivo (ej: muy cumplidor, honesto, recomendable)")
     avisado: Optional[str] = Field(default="No", description="Por defecto 'No'")
     notas: Optional[str] = Field(default="", description="Detalles adicionales: quien lo recomendo, trabajo especifico o contexto")
+    chat_origen: Optional[str] = Field(default="", description="Nombre del grupo o chat de donde surge la recomendacion")
 
 class RecommendationBatch(BaseModel):
     recomendados: List[ProviderRecommendation]
@@ -53,7 +54,8 @@ class WhatsAppInsightExtractor:
             '      "barrio": "Barrio deducido o Haras Santa Maria",\n'
             '      "motivo": "Elogio o motivo (ej: muy cumplidor, honesto)",\n'
             '      "avisado": "No",\n'
-            '      "notas": "Quien lo recomendo y contexto"\n'
+            '      "notas": "Quien lo recomendo y contexto",\n'
+            '      "chat_origen": "Nombre del chat o grupo de origen (si aparece entre corchetes)"\n'
             "    }\n"
             "  ]\n"
             "}\n\n"

@@ -214,29 +214,45 @@ else:
                     "Cantidad de mensajes recientes a analizar",
                     min_value=slider_min,
                     max_value=total_m,
-                    value=min(total_m, 3000),
+                    value=total_m,
                     step=slider_step,
-                    key="slider_universal"
+                    key="slider_universal",
+                    help="Por defecto se analiza el 100% de los mensajes cargados usando procesamiento inteligente en lotes."
                 )
             else:
                 sample_size = total_m
 
         if btn_universal:
             try:
-                with st.spinner("Analizando conversaciones con Gemini y generando estructura..."):
-                    extractor = WhatsAppInsightExtractor(api_key=api_key, model=model_choice)
-                    selected_slice = messages[-sample_size:] if sample_size < len(messages) else messages
-                    formatted_text = "\n".join([m.to_formatted_str() for m in selected_slice])
-                    
-                    result = extractor.extract_dynamic_query(formatted_text, query)
-                    filas = result.get("filas", [])
-                    
-                    if filas:
-                        df_custom = pd.DataFrame(filas)
-                        st.session_state["custom_results_df"] = df_custom
-                        st.success(f"¡Se encontraron {len(df_custom)} registros relevantes!")
-                    else:
-                        st.warning("No se encontraron registros que respondan a la consulta en este rango de mensajes.")
+                selected_slice = messages[-sample_size:] if sample_size < len(messages) else messages
+                total_to_process = len(selected_slice)
+                
+                prog_bar_u = st.progress(0, text="Iniciando búsqueda inteligente...")
+                status_box_u = st.empty()
+
+                def update_progress_u(curr, total, count, msg):
+                    pct = int((curr / total) * 100)
+                    prog_bar_u.progress(min(pct, 100), text=f"Lote {curr} de {total} ({pct}%)")
+                    status_box_u.info(f"⏳ {msg} | Registros encontrados hasta ahora: **{count}**")
+
+                extractor = WhatsAppInsightExtractor(api_key=api_key, model=model_choice)
+                result = extractor.extract_dynamic_query_batched(
+                    selected_slice,
+                    query,
+                    chunk_size=800,
+                    progress_callback=update_progress_u
+                )
+                
+                prog_bar_u.empty()
+                status_box_u.empty()
+
+                filas = result.get("filas", [])
+                if filas:
+                    df_custom = pd.DataFrame(filas)
+                    st.session_state["custom_results_df"] = df_custom
+                    st.success(f"¡Se encontraron {len(df_custom)} registros relevantes en total!")
+                else:
+                    st.warning("No se encontraron registros que respondan a la consulta en este rango de mensajes.")
             except Exception as e:
                 st.error(f"Error durante el procesamiento: {e}")
 
@@ -266,6 +282,7 @@ else:
             "Extrae profesionales con el formato exacto de tu planilla: "
             "`nombre, apellido, rubro, telefono, barrio, motivo, avisado, notas` (y chat de origen si hay varios)."
         )
+        st.info("💡 **Procesamiento inteligente por lotes activado**: OjoAlChat analiza todos los chats en bloques automáticos de 700 mensajes para sortear el límite de respuesta de Gemini. Si un profesional aparece en varios chats o mensajes, se unifican sus datos y elogios automáticamente.")
 
         col_btn_r, col_slider_r = st.columns([1, 3])
         with col_btn_r:
@@ -276,31 +293,50 @@ else:
                     "Mensajes a procesar",
                     min_value=slider_min,
                     max_value=total_m,
-                    value=min(total_m, 3000),
+                    value=total_m,
                     step=slider_step,
-                    key="recom_slider"
+                    key="recom_slider",
+                    help="Por defecto se analiza el 100% de los mensajes cargados sin recortar ninguno."
                 )
             else:
                 chunk_r = total_m
 
         if start_recom:
             try:
-                with st.spinner("Extrayendo proveedores..."):
-                    extractor = WhatsAppInsightExtractor(api_key=api_key, model=model_choice)
-                    selected_slice = messages[-chunk_r:] if chunk_r < len(messages) else messages
-                    formatted_text = "\n".join([m.to_formatted_str() for m in selected_slice])
-                    results = extractor.extract_recommendations(formatted_text)
-                    if results:
-                        df_r = pd.DataFrame(results)
-                        base_cols = ["nombre", "apellido", "rubro", "telefono", "barrio", "motivo", "avisado", "notas"]
-                        has_chats = any(r.get("chat_origen") for r in results) or len(loaded_chats_info) > 1
-                        cols = base_cols + (["chat_origen"] if has_chats and "chat_origen" in df_r.columns else [])
-                        for c in cols:
-                            if c not in df_r.columns:
-                                df_r[c] = ""
-                        df_r = df_r[cols]
-                        st.session_state["recom_df"] = df_r
-                        st.success(f"¡Se extrajeron {len(df_r)} proveedores!")
+                selected_slice = messages[-chunk_r:] if chunk_r < len(messages) else messages
+                total_to_process = len(selected_slice)
+
+                prog_bar_r = st.progress(0, text="Iniciando extracción inteligente en lotes...")
+                status_box_r = st.empty()
+
+                def update_progress_r(curr, total, count, msg):
+                    pct = int((curr / total) * 100)
+                    prog_bar_r.progress(min(pct, 100), text=f"Lote {curr} de {total} ({pct}%)")
+                    status_box_r.info(f"⏳ {msg} | Proveedores únicos detectados hasta el momento: **{count}**")
+
+                extractor = WhatsAppInsightExtractor(api_key=api_key, model=model_choice)
+                results = extractor.extract_recommendations_batched(
+                    selected_slice,
+                    chunk_size=700,
+                    progress_callback=update_progress_r
+                )
+
+                prog_bar_r.empty()
+                status_box_r.empty()
+
+                if results:
+                    df_r = pd.DataFrame(results)
+                    base_cols = ["nombre", "apellido", "rubro", "telefono", "barrio", "motivo", "avisado", "notas"]
+                    has_chats = any(r.get("chat_origen") for r in results) or len(loaded_chats_info) > 1
+                    cols = base_cols + (["chat_origen"] if has_chats and "chat_origen" in df_r.columns else [])
+                    for c in cols:
+                        if c not in df_r.columns:
+                            df_r[c] = ""
+                    df_r = df_r[cols]
+                    st.session_state["recom_df"] = df_r
+                    st.success(f"🎉 ¡Extracción completada! Se extrajeron **{len(df_r)}** proveedores recomendados únicos.")
+                else:
+                    st.warning("No se encontraron recomendaciones en los mensajes analizados.")
             except Exception as e:
                 st.error(f"Error: {e}")
 

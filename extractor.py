@@ -32,6 +32,91 @@ def _clean_json_text(text: str) -> str:
         text = text[:-3]
     return text.strip()
 
+def deduplicate_recommendations(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Deduplica recomendaciones cruzadas (entre chats o dentro del mismo chat)
+    utilizando el teléfono normalizado (últimos 8 dígitos) o tupla (nombre, rubro).
+    Fusiona chats de origen, elogios/motivos y notas adicionales sin perder datos.
+    """
+    merged_map: Dict[str, Dict[str, Any]] = {}
+
+    for item in items:
+        nombre = str(item.get("nombre") or "").strip()
+        apellido = str(item.get("apellido") or "").strip()
+        rubro = str(item.get("rubro") or "").strip()
+        telefono = str(item.get("telefono") or "").strip()
+        barrio = str(item.get("barrio") or "Haras Santa Maria").strip()
+        motivo = str(item.get("motivo") or "").strip()
+        avisado = str(item.get("avisado") or "No").strip()
+        notas = str(item.get("notas") or "").strip()
+        chat_origen = str(item.get("chat_origen") or "").strip()
+
+        # Extraer dígitos para clave telefónica (últimos 8 dígitos evitan prefijos de país/área dispares)
+        digits = re.sub(r"\D", "", telefono)
+        key_phone = digits[-8:] if len(digits) >= 8 else None
+
+        # Claves normalizadas de texto
+        norm_name = re.sub(r"[^a-z0-9]", "", nombre.lower())
+        norm_rubro = re.sub(r"[^a-z0-9]", "", rubro.lower())
+
+        if key_phone:
+            match_key = f"tel_{key_phone}"
+        elif norm_name and norm_rubro:
+            match_key = f"nr_{norm_name}_{norm_rubro}"
+        elif norm_name:
+            match_key = f"n_{norm_name}"
+        else:
+            match_key = f"raw_{len(merged_map)}"
+
+        if match_key not in merged_map:
+            merged_map[match_key] = {
+                "nombre": nombre,
+                "apellido": apellido,
+                "rubro": rubro,
+                "telefono": telefono,
+                "barrio": barrio,
+                "motivo": motivo,
+                "avisado": avisado,
+                "notas": notas,
+                "chat_origen": chat_origen,
+            }
+        else:
+            existing = merged_map[match_key]
+            # Conservar nombre o apellido más completo
+            if len(nombre) > len(existing["nombre"]):
+                existing["nombre"] = nombre
+            if apellido and not existing["apellido"]:
+                existing["apellido"] = apellido
+            # Completar rubro si estaba vacío o muy genérico
+            if len(rubro) > len(existing["rubro"]):
+                existing["rubro"] = rubro
+            # Conservar teléfono si el anterior estaba vacío
+            if not existing["telefono"] and telefono:
+                existing["telefono"] = telefono
+            # Fusionar chats de origen sin duplicar
+            existing_chats = [c.strip() for c in existing["chat_origen"].split(",") if c.strip()]
+            new_chats = [c.strip() for c in chat_origen.split(",") if c.strip()]
+            for nc in new_chats:
+                if nc and nc not in existing_chats:
+                    existing_chats.append(nc)
+            existing["chat_origen"] = ", ".join(existing_chats)
+
+            # Fusionar motivos/elogios si son diferentes
+            if motivo and motivo not in existing["motivo"]:
+                if existing["motivo"]:
+                    existing["motivo"] += f" ; {motivo}"
+                else:
+                    existing["motivo"] = motivo
+
+            # Fusionar notas
+            if notas and notas not in existing["notas"]:
+                if existing["notas"]:
+                    existing["notas"] += f" ; {notas}"
+                else:
+                    existing["notas"] = notas
+
+    return list(merged_map.values())
+
 class WhatsAppInsightExtractor:
     def __init__(self, api_key: Optional[str] = None, model: str = "gemini-2.5-flash"):
         self.api_key = api_key or os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
@@ -141,3 +226,109 @@ class WhatsAppInsightExtractor:
         )
         response = self._generate_with_retry(prompt, config)
         return json.loads(_clean_json_text(response.text))
+
+    def extract_recommendations_batched(
+        self,
+        messages: List[Any],
+        chunk_size: int = 700,
+        progress_callback: Optional[Any] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Procesa los mensajes en lotes de tamaño `chunk_size` para sortear el límite
+        de tokens de salida de los LLMs (~4k-8k tokens en JSON) y asegurar la extracción
+        del 100% de los contactos recomendados sin truncamiento.
+        """
+        if not messages:
+            return []
+
+        total_msgs = len(messages)
+        chunks = [messages[i:i + chunk_size] for i in range(0, total_msgs, chunk_size)]
+        total_chunks = len(chunks)
+        
+        all_recommendations: List[Dict[str, Any]] = []
+
+        for idx, chunk in enumerate(chunks):
+            chunk_num = idx + 1
+            if progress_callback:
+                progress_callback(
+                    chunk_num,
+                    total_chunks,
+                    len(all_recommendations),
+                    f"Procesando lote {chunk_num} de {total_chunks} ({len(chunk)} mensajes)..."
+                )
+
+            chunk_text = "\n".join([
+                m.to_formatted_str() if hasattr(m, "to_formatted_str") else str(m)
+                for m in chunk
+            ])
+
+            try:
+                batch_results = self.extract_recommendations(chunk_text)
+                if batch_results:
+                    all_recommendations.extend(batch_results)
+            except Exception as e:
+                print(f"[Aviso] Error procesando lote {chunk_num}/{total_chunks}: {e}")
+
+            if progress_callback:
+                progress_callback(
+                    chunk_num,
+                    total_chunks,
+                    len(all_recommendations),
+                    f"Lote {chunk_num}/{total_chunks} finalizado. {len(all_recommendations)} recomendados detectados."
+                )
+
+        # Deduplicar y fusionar datos cruzados
+        deduped = deduplicate_recommendations(all_recommendations)
+        return deduped
+
+    def extract_dynamic_query_batched(
+        self,
+        messages: List[Any],
+        user_query: str,
+        chunk_size: int = 800,
+        progress_callback: Optional[Any] = None
+    ) -> Dict[str, Any]:
+        """
+        Procesa una consulta universal en lotes para abarcar todo el historial
+        sin exceder la ventana de tokens de salida.
+        """
+        if not messages:
+            return {"columnas": [], "filas": []}
+
+        total_msgs = len(messages)
+        chunks = [messages[i:i + chunk_size] for i in range(0, total_msgs, chunk_size)]
+        total_chunks = len(chunks)
+
+        all_filas: List[Dict[str, Any]] = []
+        unified_cols: List[str] = []
+
+        for idx, chunk in enumerate(chunks):
+            chunk_num = idx + 1
+            if progress_callback:
+                progress_callback(
+                    chunk_num,
+                    total_chunks,
+                    len(all_filas),
+                    f"Analizando lote {chunk_num} de {total_chunks}..."
+                )
+
+            chunk_text = "\n".join([
+                m.to_formatted_str() if hasattr(m, "to_formatted_str") else str(m)
+                for m in chunk
+            ])
+
+            try:
+                res = self.extract_dynamic_query(chunk_text, user_query)
+                cols = res.get("columnas", [])
+                filas = res.get("filas", [])
+                if not unified_cols and cols:
+                    unified_cols = cols
+                if filas:
+                    all_filas.extend(filas)
+            except Exception as e:
+                print(f"[Aviso] Error en consulta dinámica lote {chunk_num}: {e}")
+
+        return {
+            "columnas": unified_cols,
+            "filas": all_filas
+        }

@@ -31,8 +31,15 @@
     function getChatTitle() {
         const header = document.querySelector('#main header');
         if (!header) return '';
+        // El nombre del grupo suele tener su propio title; si no, la primera línea del encabezado
+        // que no sea un texto genérico.
+        const conTitle = [...header.querySelectorAll('span[title], div[title]')]
+            .map(e => e.getAttribute('title').trim())
+            .find(t => t && !/^(chat|perfil|foto|buscar|menú|menu)$/i.test(t) && t.length > 1);
+        if (conTitle) return conTitle;
         const infoBtn = header.querySelector('div[role="button"]') || header;
-        const lines = infoBtn.innerText.split('\n').map(l => l.trim()).filter(Boolean);
+        const lines = infoBtn.innerText.split('\n').map(l => l.trim())
+            .filter(l => l && !/^(chat|haz clic|clic aquí|toca|en línea|escribiendo)/i.test(l));
         return lines.length > 0 ? lines[0] : '';
     }
 

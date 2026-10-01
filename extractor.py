@@ -590,7 +590,7 @@ class WhatsAppInsightExtractor:
     def extract_recommendations_batched(
         self,
         messages: List[Any],
-        chunk_size: int = 200,
+        chunk_size: int = 80,
         deduplicate: bool = True,
         progress_callback: Optional[Any] = None
     ) -> List[Dict[str, Any]]:
@@ -700,6 +700,8 @@ class WhatsAppInsightExtractor:
             "1b. Usá SOLO lo que dicen los datos. No agregues valoraciones, adjetivos ni conclusiones que no estén en las filas "
             "(por ejemplo 'confiable', 'calificados', 'reconocidos por su rapidez'). Si un dato no está, no lo supongas.\n"
             "1c. Dá el total exacto de registros que figura arriba.\n"
+            "1d. No nombres a quienes escribieron en el chat ni muestres sus teléfonos (por ejemplo, 'recomendado por +54…'): "
+            "son datos personales de los vecinos. Solo nombres y datos de lo que se buscó.\n"
             "2. NUNCA menciones lotes, ni 'Lote 1', ni repitas frases de apertura como 'Se encontraron...', 'Se analizaron los mensajes...' de manera fragmentada.\n"
             "3. Estructura la respuesta con un breve balance general y luego viñetas agrupadas por rubro, categoría o tema principal.\n"
             "4. Menciona con nombre y apellido a los profesionales, contactos o datos clave más destacados.\n"
@@ -721,7 +723,7 @@ class WhatsAppInsightExtractor:
         self,
         messages: List[Any],
         user_query: str,
-        chunk_size: int = 200,
+        chunk_size: int = 80,
         progress_callback: Optional[Any] = None
     ) -> Dict[str, Any]:
         """

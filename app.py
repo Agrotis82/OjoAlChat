@@ -8,7 +8,7 @@ import parser as parser_module
 import extractor as extractor_module
 importlib.reload(parser_module)
 importlib.reload(extractor_module)
-from parser import WhatsAppParser, ChatMessage
+from parser import WhatsAppParser, ChatMessage, extraer_contactos
 from extractor import WhatsAppInsightExtractor
 from proveedores_ia import PROVEEDORES, SERVICIOS_COMPATIBLES
 
@@ -230,9 +230,10 @@ else:
         with st.expander("📁 Detalle de los chats unificados", expanded=False):
             st.dataframe(pd.DataFrame(loaded_chats_info), use_container_width=True, hide_index=True)
 
-    tab_universal, tab_recom, tab_chat = st.tabs([
+    tab_universal, tab_recom, tab_contactos, tab_chat = st.tabs([
         "🔍 Búsqueda Universal (Cualquier Chat o Pregunta)",
         "🛠️ Plantilla: Directorio de Profesionales",
+        "📇 Contactos compartidos",
         "📜 Explorador de Mensajes"
     ])
 
@@ -305,7 +306,7 @@ else:
                     min_value=max(1, min(50, pool_u_len // 2)),
                     max_value=pool_u_len,
                     value=pool_u_len,
-                    step=max(1, min(100, pool_u_len // 10)) if pool_u_len > 50 else 1,
+                    step=1,
                     key="slider_universal",
                     help="Por defecto se analiza el 100% de los mensajes de los chats seleccionados."
                 )
@@ -333,7 +334,7 @@ else:
                 result = extractor.extract_dynamic_query_batched(
                     selected_slice,
                     query,
-                    chunk_size=200,
+                    chunk_size=80,
                     progress_callback=update_progress_u
                 )
 
@@ -448,7 +449,7 @@ else:
                     min_value=max(1, min(50, pool_len // 2)),
                     max_value=pool_len,
                     value=pool_len,
-                    step=max(1, min(100, pool_len // 10)) if pool_len > 50 else 1,
+                    step=1,
                     key="recom_slider",
                     help="Por defecto se analiza el 100% de los mensajes de los chats seleccionados."
                 )
@@ -475,7 +476,7 @@ else:
                 extractor = WhatsAppInsightExtractor(api_key=api_key, model=model_choice, provider=provider_id, base_url=base_url)
                 results_raw = extractor.extract_recommendations_batched(
                     selected_slice,
-                    chunk_size=200,
+                    chunk_size=80,
                     deduplicate=False,
                     progress_callback=update_progress_r
                 )
@@ -636,6 +637,35 @@ else:
                 df_for_sheets = df_display[[c for c in base_cols if c in df_display.columns]]
                 tsv_text = df_for_sheets.to_csv(sep="\t", index=False)
                 st.text_area("📋 Copiar y pegar a Google Sheets (vista actual)", tsv_text, height=70)
+
+    # ----------------- TAB: CONTACTOS COMPARTIDOS (SIN IA) -----------------
+    with tab_contactos:
+        st.subheader("📇 Todas las tarjetas de contacto compartidas")
+        st.write(
+            "Sale directo de los chats, sin IA: no se pierde ninguna. Cada fila es una tarjeta de contacto, "
+            "con quién la compartió y el pedido al que probablemente respondía."
+        )
+        contactos = extraer_contactos(messages)
+        if not contactos:
+            st.info(
+                "No hay tarjetas de contacto en estos chats. Si en el grupo se compartieron contactos, "
+                "bajalo de nuevo con el script actual (en el panel tiene que aparecer 'Contactos compartidos')."
+            )
+        else:
+            df_c = pd.DataFrame(contactos)
+            sin_tel = int((df_c["telefono"] == "").sum())
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Tarjetas compartidas", len(df_c))
+            c2.metric("Contactos distintos", df_c["telefono"].replace("", pd.NA).dropna().nunique())
+            c3.metric("Sin número", sin_tel)
+            st.dataframe(df_c, use_container_width=True, hide_index=True)
+            st.download_button(
+                "📥 Descargar CSV",
+                data=df_c.to_csv(index=False).encode("utf-8-sig"),
+                file_name="contactos_compartidos.csv",
+                mime="text/csv",
+            )
+            st.caption("⚠️ La columna 'compartio' tiene los números de los vecinos: no subas este archivo a lugares compartidos.")
 
     # ----------------- TAB 3: VER CHAT LIMPIO -----------------
     with tab_chat:

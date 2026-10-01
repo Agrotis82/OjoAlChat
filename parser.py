@@ -152,3 +152,39 @@ def message_sort_key(m: "ChatMessage"):
             h = 0
         minutos = h * 60 + mi
     return (anio, mes, dia, minutos)
+
+
+_CONTACTO_RE = re.compile(r"\[CONTACTO: (?P<nombre>.+?) \| (?P<telefono>[^|\]]+)(?: \| (?P<extras>[^\]]+))?\]")
+_PEDIDO_RE = re.compile(r"\?|recomiend|alguien|alguno|necesito|busco|tienen|conocen|me pasan|pasame", re.I)
+
+
+def extraer_contactos(messages: List[ChatMessage], mensajes_atras: int = 15) -> List[dict]:
+    """
+    Todas las tarjetas de contacto compartidas ([CONTACTO: Nombre | teléfono]), sin IA, con el pedido
+    al que probablemente responden: el mensaje anterior más cercano del mismo chat, de otra persona,
+    que pregunta o pide algo. Los mensajes tienen que estar en orden (WhatsAppParser.parse los ordena).
+    """
+    filas = []
+    por_chat: dict = {}
+    for m in messages:
+        por_chat.setdefault(getattr(m, "source_chat", ""), []).append(m)
+
+    for chat, msgs in por_chat.items():
+        for i, m in enumerate(msgs):
+            for c in _CONTACTO_RE.finditer(m.text):
+                pedido = ""
+                for previo in reversed(msgs[max(0, i - mensajes_atras):i]):
+                    if previo.sender != m.sender and "[CONTACTO:" not in previo.text and _PEDIDO_RE.search(previo.text):
+                        pedido = previo.text.strip().replace("\n", " ")[:200]
+                        break
+                telefono = c.group("telefono").strip()
+                filas.append({
+                    "nombre_contacto": c.group("nombre").strip(),
+                    "telefono": "" if telefono == "sin número" else telefono,
+                    "extras": (c.group("extras") or "").strip(),
+                    "compartio": m.sender,
+                    "chat": chat,
+                    "fecha": m.date,
+                    "pedido_previo": pedido,
+                })
+    return filas

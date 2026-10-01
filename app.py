@@ -5,7 +5,9 @@ import importlib
 import pandas as pd
 import streamlit as st
 import parser as parser_module
+import extractor as extractor_module
 importlib.reload(parser_module)
+importlib.reload(extractor_module)
 from parser import WhatsAppParser, ChatMessage
 from extractor import WhatsAppInsightExtractor
 
@@ -54,8 +56,9 @@ with st.sidebar:
     
     model_choice = st.selectbox(
         "Modelo de IA",
-        ["gemini-3.8-flash", "gemini-3.5-flash-lite"],
+        ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash", "gemini-3.8-flash"],
         index=0,
+        help="gemini-2.5-flash es el modelo más estable y recomendado con la mayor disponibilidad en Google."
     )
     
     st.divider()

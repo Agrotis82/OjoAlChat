@@ -1,6 +1,8 @@
 import os
 import json
 import re
+import time
+import random
 from typing import List, Dict, Any, Optional
 from pydantic import BaseModel, Field
 from google import genai
@@ -31,12 +33,42 @@ def _clean_json_text(text: str) -> str:
     return text.strip()
 
 class WhatsAppInsightExtractor:
-    def __init__(self, api_key: Optional[str] = None, model: str = "gemini-3.8-flash"):
+    def __init__(self, api_key: Optional[str] = None, model: str = "gemini-2.5-flash"):
         self.api_key = api_key or os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
         if not self.api_key:
             raise ValueError("No se encontro una API Key de Gemini. Por favor configurala en la app o en las variables de entorno.")
         self.client = genai.Client(api_key=self.api_key)
         self.model = model
+
+    def _generate_with_retry(self, contents: str, config: types.GenerateContentConfig, max_retries: int = 3) -> Any:
+        candidate_models = [self.model]
+        # Cascada de modelos estables de respaldo si el principal experimenta saturación (503 / 429)
+        fallbacks = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash", "gemini-3.8-flash"]
+        for fb in fallbacks:
+            if fb not in candidate_models:
+                candidate_models.append(fb)
+
+        last_error = None
+        for model_name in candidate_models:
+            for attempt in range(max_retries):
+                try:
+                    response = self.client.models.generate_content(
+                        model=model_name,
+                        contents=contents,
+                        config=config,
+                    )
+                    return response
+                except Exception as e:
+                    last_error = e
+                    err_msg = str(e).lower()
+                    # Si es error transitorio (503 Unavailable, 429 Rate Limit, High demand)
+                    if any(term in err_msg for term in ["503", "429", "unavailable", "high demand", "capacity", "temporary"]):
+                        wait_sec = (attempt + 1) * 2 + random.uniform(0.5, 1.5)
+                        time.sleep(wait_sec)
+                    else:
+                        # Error no transitorio (ej: schema no soportado), pasar al siguiente intento o fallback
+                        break
+        raise last_error
 
     def extract_recommendations(self, messages_text: str) -> List[Dict[str, Any]]:
         prompt = (
@@ -63,25 +95,19 @@ class WhatsAppInsightExtractor:
         )
 
         try:
-            response = self.client.models.generate_content(
-                model=self.model,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                    response_schema=RecommendationBatch,
-                ),
+            config = types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_schema=RecommendationBatch,
             )
+            response = self._generate_with_retry(prompt, config)
             data = json.loads(_clean_json_text(response.text))
             return data.get("recomendados", [])
         except Exception:
             # Fallback sin response_schema estricto para evitar restricciones de Developer API
-            response = self.client.models.generate_content(
-                model=self.model,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                ),
+            config = types.GenerateContentConfig(
+                response_mime_type="application/json",
             )
+            response = self._generate_with_retry(prompt, config)
             data = json.loads(_clean_json_text(response.text))
             return data.get("recomendados", [])
 
@@ -110,13 +136,8 @@ class WhatsAppInsightExtractor:
             f"Historial de mensajes:\n{messages_text}"
         )
 
-        # En Gemini Developer API, para esquemas libres/dinamicos se usa response_mime_type sin response_schema
-        # para evitar el error 'additionalProperties is only supported in Gemini Enterprise'
-        response = self.client.models.generate_content(
-            model=self.model,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json",
-            ),
+        config = types.GenerateContentConfig(
+            response_mime_type="application/json",
         )
+        response = self._generate_with_retry(prompt, config)
         return json.loads(_clean_json_text(response.text))

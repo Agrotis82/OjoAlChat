@@ -1,8 +1,11 @@
 import io
 import os
 import re
+import importlib
 import pandas as pd
 import streamlit as st
+import parser as parser_module
+importlib.reload(parser_module)
 from parser import WhatsAppParser, ChatMessage
 from extractor import WhatsAppInsightExtractor
 
@@ -103,8 +106,11 @@ parser = WhatsAppParser()
 if uploaded_files:
     for f in uploaded_files:
         chat_name = extract_chat_name(f.name)
-        text = f.read().decode("utf-8", errors="ignore")
-        chat_msgs = parser.parse(text, source_chat=chat_name)
+        raw_bytes = f.getvalue() if hasattr(f, "getvalue") else f.read()
+        text = raw_bytes.decode("utf-8", errors="ignore") if isinstance(raw_bytes, bytes) else str(raw_bytes)
+        chat_msgs = parser.parse(text)
+        for m in chat_msgs:
+            m.source_chat = chat_name
         messages.extend(chat_msgs)
         loaded_chats_info.append({
             "Chat / Grupo": chat_name,
@@ -113,7 +119,9 @@ if uploaded_files:
         })
 elif pasted_text.strip():
     chat_name = pasted_chat_name.strip() or "Chat Pegado"
-    chat_msgs = parser.parse(pasted_text, source_chat=chat_name)
+    chat_msgs = parser.parse(pasted_text)
+    for m in chat_msgs:
+        m.source_chat = chat_name
     messages.extend(chat_msgs)
     loaded_chats_info.append({
         "Chat / Grupo": chat_name,
@@ -124,7 +132,9 @@ elif st.session_state.get("use_local_default", False) and os.path.exists(local_p
     chat_name = "Vecinas Molineras"
     with open(local_path, "r", encoding="utf-8", errors="ignore") as f:
         text = f.read()
-    chat_msgs = parser.parse(text, source_chat=chat_name)
+    chat_msgs = parser.parse(text)
+    for m in chat_msgs:
+        m.source_chat = chat_name
     messages.extend(chat_msgs)
     loaded_chats_info.append({
         "Chat / Grupo": chat_name,

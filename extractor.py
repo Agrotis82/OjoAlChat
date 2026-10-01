@@ -193,6 +193,45 @@ def normalize_dynamic_result(data: Any, default_chat: str = "") -> Dict[str, Any
         "filas": filas
     }
 
+REGLA_TELEFONOS = (
+    "REGLA DE TELÉFONOS (obligatoria): los contactos compartidos aparecen como "
+    "'[CONTACTO: Nombre | teléfono]'. El teléfono de un proveedor sale SOLO de esas líneas "
+    "o de un número escrito dentro del texto del mensaje. NUNCA uses el número que aparece como "
+    "remitente, antes de los dos puntos del encabezado: es el vecino que escribe, no el proveedor. "
+    "Si no hay teléfono del proveedor, dejalo vacío.\n"
+)
+
+
+def _cola_digitos(valor: Any) -> str:
+    """Últimos 8 dígitos de un teléfono, para comparar sin importar el formato."""
+    digitos = re.sub(r"\D", "", str(valor or ""))
+    return digitos[-8:] if len(digitos) >= 8 else ""
+
+
+def telefonos_de_remitentes(mensajes: List[Any]) -> set:
+    """Los teléfonos de quienes escriben en el lote (cuando WhatsApp muestra el número y no un nombre)."""
+    return {cola for cola in (_cola_digitos(getattr(m, "sender", "")) for m in mensajes) if cola}
+
+
+def descartar_telefonos_de_remitentes(filas: List[Dict[str, Any]], remitentes: set) -> int:
+    """
+    Vacía el teléfono de una fila cuando es el de quien escribió el mensaje: la IA a veces
+    lo toma como si fuera del proveedor. Devuelve cuántos vació.
+    """
+    descartados = 0
+    for fila in filas:
+        for clave in list(fila.keys()):
+            if "tel" not in clave.lower():
+                continue
+            if _cola_digitos(fila.get(clave)) in remitentes:
+                fila[clave] = ""
+                descartados += 1
+                if "notas" in fila:
+                    aviso = "teléfono descartado: era de quien escribió"
+                    fila["notas"] = f"{fila['notas']} ; {aviso}" if fila.get("notas") else aviso
+    return descartados
+
+
 def deduplicate_recommendations(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
     Deduplica recomendaciones cruzadas (entre chats o dentro del mismo chat)
@@ -337,6 +376,8 @@ class WhatsAppInsightExtractor:
         self.model = model or (self.available_models[0] if self.available_models else "gemini-3.5-flash-lite")
         self.last_models_used: List[str] = []
         self.fallback_occurred: bool = False
+        # Teléfonos que la IA puso como del proveedor pero eran de quien escribió (ver descartar_telefonos_de_remitentes).
+        self.telefonos_descartados: int = 0
 
     def _generate_with_retry(self, contents: str, config: types.GenerateContentConfig, max_retries: int = 2) -> Tuple[Any, str]:
         # Jerarquía ordenada: primero el modelo seleccionado/adecuado, luego los respaldos
@@ -426,6 +467,7 @@ class WhatsAppInsightExtractor:
             "Eres un analista experto en extraer recomendaciones de servicios y personas a partir de chats de WhatsApp.\n"
             "Tu objetivo es encontrar TODAS las personas, profesionales, tecnicos o comercios recomendados en la conversacion.\n"
             "Presta especial atencion a pedidos de recomendacion y sus respuestas, y contactos compartidos.\n\n"
+            + REGLA_TELEFONOS + "\n"
             "Debes responder en formato JSON con la siguiente estructura:\n"
             "{\n"
             '  "recomendados": [\n'
@@ -474,7 +516,8 @@ class WhatsAppInsightExtractor:
             "3. En los mensajes verás encabezados de la forma '[NombreDelChat | 29/9/2026, 14:49] Remitente: Texto'. Si te piden la columna 'chat' o grupo, usa 'NombreDelChat'.\n"
             "4. En 'respuesta_directa', redacta un resumen claro en español de lo que encontraste (quiénes, qué dijeron, acuerdos o recomendaciones).\n"
             "5. En 'filas', agrega todas las ocurrencias o filas encontradas que cumplan con la solicitud del usuario.\n"
-            "6. Si no hay ocurrencias que cumplan los criterios en estos mensajes, devuelve 'filas': [] y en 'respuesta_directa' aclara brevemente que no hubo menciones.\n\n"
+            "6. Si no hay ocurrencias que cumplan los criterios en estos mensajes, devuelve 'filas': [] y en 'respuesta_directa' aclara brevemente que no hubo menciones.\n"
+            "7. " + REGLA_TELEFONOS + "\n"
             "Responde en formato JSON con la siguiente estructura (o directamente un array de objetos JSON con las columnas solicitadas):\n"
             "{\n"
             '  "respuesta_directa": "Resumen de lo encontrado...",\n'
@@ -514,6 +557,7 @@ class WhatsAppInsightExtractor:
         total_chunks = len(chunks)
         
         all_recommendations: List[Dict[str, Any]] = []
+        self.telefonos_descartados = 0
         models_used: List[str] = []
 
         for idx, chunk in enumerate(chunks):
@@ -543,6 +587,8 @@ class WhatsAppInsightExtractor:
                 batch_results, used_model = self.extract_recommendations(chunk_text)
                 if used_model and used_model not in models_used:
                     models_used.append(used_model)
+                self.telefonos_descartados += descartar_telefonos_de_remitentes(
+                    batch_results or [], telefonos_de_remitentes(chunk))
                 if batch_results:
                     for br in batch_results:
                         if not br.get("chat_origen") and default_chat:
@@ -649,6 +695,7 @@ class WhatsAppInsightExtractor:
         total_chunks = len(chunks)
 
         all_filas: List[Dict[str, Any]] = []
+        self.telefonos_descartados = 0
         unified_cols: List[str] = []
         respuestas_parciales: List[str] = []
         batch_errors: List[str] = []
@@ -681,6 +728,8 @@ class WhatsAppInsightExtractor:
                 if used_model and used_model not in models_used:
                     models_used.append(used_model)
                 norm = normalize_dynamic_result(raw_res, default_chat=default_chat)
+                self.telefonos_descartados += descartar_telefonos_de_remitentes(
+                    norm.get("filas", []), telefonos_de_remitentes(chunk))
                 direct = str(norm.get("respuesta_directa", "")).strip()
                 if direct and not any(term in direct.lower() for term in ["no se encontró", "no hay información", "no encontré", "no se encontraron", "no hubo menciones"]):
                     respuestas_parciales.append(direct)
@@ -744,4 +793,5 @@ class WhatsAppInsightExtractor:
             "filas": all_filas,
             "modelos_usados": models_used,
             "errores_lotes": batch_errors,
+            "telefonos_descartados": self.telefonos_descartados,
         }

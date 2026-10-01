@@ -316,6 +316,10 @@ else:
             filas = res_data.get("filas", [])
             used_models_info = st.session_state.get("custom_model_display", "")
 
+            descartados = res_data.get("telefonos_descartados", 0)
+            if descartados:
+                st.caption(f"📵 Se vaciaron {descartados} teléfono(s) que la IA había tomado de quien escribió el mensaje, no del proveedor.")
+
             errores_lotes = res_data.get("errores_lotes", [])
             if errores_lotes:
                 st.caption(f"ℹ️ *Nota técnica: Hubo una interrupción transitoria en {len(errores_lotes)} lote(s) debido a saturación temporal de red, pero se extrajeron los registros del resto de los mensajes exitosamente.*")
@@ -437,6 +441,8 @@ else:
                     model_note = ""
 
                 st.session_state["recom_model_display"] = f"{used_models_str}{model_note}"
+                if extractor.telefonos_descartados:
+                    st.caption(f"📵 Se vaciaron {extractor.telefonos_descartados} teléfono(s) que la IA había tomado de quien escribió el mensaje, no del proveedor.")
 
                 if results_raw:
                     st.session_state["raw_recommendations"] = results_raw

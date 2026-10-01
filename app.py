@@ -56,17 +56,36 @@ with st.sidebar:
     )
     
     st.divider()
-    st.subheader("📁 Archivos de Chat")
-    uploaded_files = st.file_uploader(
-        "Sube uno o varios chats (.txt)",
-        type=["txt"],
-        accept_multiple_files=True,
-        help="Exporta tus chats de WhatsApp como archivos .txt y súbelos aquí. ¡Puedes seleccionar varios manteniendo presionada la tecla Ctrl/Cmd!"
+    st.subheader("📁 Carga de Chats")
+    load_mode = st.radio(
+        "Modo de carga",
+        ["Subir archivos (.txt)", "Pegar texto copiado"],
+        horizontal=True,
+        label_visibility="collapsed"
     )
+
+    uploaded_files = []
+    pasted_text = ""
+    pasted_chat_name = ""
+
+    if load_mode == "Subir archivos (.txt)":
+        uploaded_files = st.file_uploader(
+            "Sube uno o varios chats (.txt)",
+            type=["txt"],
+            accept_multiple_files=True,
+            help="Exporta tus chats de WhatsApp como archivos .txt y súbelos aquí. ¡Puedes seleccionar varios manteniendo presionada la tecla Ctrl/Cmd!"
+        )
+    else:
+        pasted_chat_name = st.text_input("Nombre del chat/grupo", value="Ventas y proveedores")
+        pasted_text = st.text_area(
+            "Pega los mensajes aquí (Ctrl+V)",
+            height=180,
+            placeholder="[29/9/2026, 14:49:10] Juan: Recomiendo a Pedro Plomero 11223344\n[29/9/2026, 14:50:00] María: ¡Gracias!"
+        )
 
     # Acceso rápido si existe archivo local
     local_path = r"C:\Users\Agos\DocumentosAgos\Datito\chat_whatsapp_vecinasmolineras-2026-09-30desde030206.txt"
-    if os.path.exists(local_path) and not uploaded_files:
+    if os.path.exists(local_path) and not uploaded_files and not pasted_text.strip():
         if st.button("Cargar chat de ejemplo (Haras Santa María)"):
             st.session_state["use_local_default"] = True
 
@@ -92,6 +111,15 @@ if uploaded_files:
             "Archivo": f.name,
             "Mensajes": len(chat_msgs)
         })
+elif pasted_text.strip():
+    chat_name = pasted_chat_name.strip() or "Chat Pegado"
+    chat_msgs = parser.parse(pasted_text, source_chat=chat_name)
+    messages.extend(chat_msgs)
+    loaded_chats_info.append({
+        "Chat / Grupo": chat_name,
+        "Archivo": "Texto pegado directamente",
+        "Mensajes": len(chat_msgs)
+    })
 elif st.session_state.get("use_local_default", False) and os.path.exists(local_path):
     chat_name = "Vecinas Molineras"
     with open(local_path, "r", encoding="utf-8", errors="ignore") as f:

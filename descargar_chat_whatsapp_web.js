@@ -9,6 +9,8 @@
  * - Copia directa al portapapeles y visualizador de texto en el panel.
  * - Limpieza de nombres sin tildes ni caracteres inválidos para Windows.
  * - Extracción multi-chat continua sin recargar la página.
+ * - Tarjetas de contacto con su número: abre cada tarjeta (o "Ver todos") y escribe
+ *   [CONTACTO: Nombre | +54 9 11 5555-1234]. Expande "Leer más" y no corta antes de tiempo.
  */
 
 (function() {
@@ -116,6 +118,10 @@
                 <span style="color:#8696a0;">Mensajes recopilados:</span>
                 <span id="ojo-count" style="font-weight:bold; color:#00a884;">0</span>
             </div>
+            <div style="display:flex; justify-content:space-between; margin-bottom:4px;">
+                <span style="color:#8696a0;">Contactos compartidos:</span>
+                <span id="ojo-contacts" style="font-weight:bold; color:#00a884;">0</span>
+            </div>
             <div style="display:flex; justify-content:space-between;">
                 <span style="color:#8696a0;">Fecha más antigua leída:</span>
                 <span id="ojo-oldest-date" style="font-weight:bold; color:#53bdeb;">-</span>
@@ -181,7 +187,11 @@
         consecutiveSameCount = 0;
         lastMessagesTotal = 0;
         lastExportedText = '';
+        contactCache.clear();
+        contactsFound = 0;
+        contactsWithoutPhone = 0;
         document.getElementById('ojo-count').innerText = '0';
+        document.getElementById('ojo-contacts').innerText = '0';
         document.getElementById('ojo-oldest-date').innerText = '-';
         document.getElementById('ojo-status').innerText = statusMsg;
         document.getElementById('ojo-status').style.color = '#53bdeb';
@@ -200,39 +210,228 @@
         resetCounters(`Chat actualizado: ${currentChatTitle}`);
     };
 
-    function collectMessages(targetFromDate, targetToDate) {
+    // ---------- Lectura de mensajes, tarjetas de contacto y fechas ----------
+    // Probado contra WhatsApp Web el 1/10/2026. Si WhatsApp cambia su HTML, revisar estos selectores.
+
+    const sleep = ms => new Promise(r => setTimeout(r, ms));
+    const contactCache = new Map(); // data-id del mensaje -> [{ nombre, telefonos, extras }]
+    let contactsFound = 0;
+    let contactsWithoutPhone = 0;
+
+    const DIAS = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'];
+    const DIVIDER_RE = /^(hoy|ayer|domingo|lunes|martes|miércoles|miercoles|jueves|viernes|sábado|sabado|\d{1,2}\/\d{1,2}\/\d{2,4})$/i;
+
+    // "Hoy", "Ayer", "domingo" o "8/9/2026", tal como los muestra WhatsApp entre días.
+    function parseDivider(text) {
+        const t = text.trim().toLowerCase();
+        const base = new Date();
+        base.setHours(0, 0, 0, 0);
+        if (t === 'hoy') return base;
+        if (t === 'ayer') { base.setDate(base.getDate() - 1); return base; }
+        const dia = DIAS.indexOf(t.replace('miercoles', 'miércoles').replace('sabado', 'sábado'));
+        if (dia >= 0) {
+            for (let i = 2; i <= 7; i++) {
+                const d = new Date(base);
+                d.setDate(base.getDate() - i);
+                if (d.getDay() === dia) return d;
+            }
+        }
+        return parseMessageDate(t);
+    }
+
+    const pad = n => String(n).padStart(2, '0');
+    const fmtDate = d => `${d.getDate()}/${d.getMonth() + 1}/${d.getFullYear()}`;
+
+    // El texto propio del mensaje, sin el mensaje citado ni la vista previa de un link.
+    function messageText(pre) {
+        const spans = [...pre.querySelectorAll('span.selectable-text')].filter(s =>
+            !s.closest('[data-testid*="quoted"]') &&
+            !s.closest('[aria-label*="itado"]') &&
+            !s.closest('[data-testid="link-preview-container"]') &&
+            !(s.parentElement && s.parentElement.closest('span.selectable-text'))
+        );
+        return spans.map(s => s.innerText.trim()).filter(Boolean).join('\n');
+    }
+
+    function isClickable(el) {
+        return el && el.getBoundingClientRect().width > 0;
+    }
+
+    async function waitFor(fn, timeoutMs) {
+        const start = Date.now();
+        while (Date.now() - start < timeoutMs) {
+            const v = fn();
+            if (v) return v;
+            await sleep(150);
+        }
+        return null;
+    }
+
+    // Lee el cuadro "Ver contacto" o "N contactos": nombre y teléfonos de cada uno.
+    async function readContactDialog(dialog) {
+        const result = [];
+        const seen = new Set();
+        const scroller = [...dialog.querySelectorAll('div')].find(d => d.scrollHeight > d.clientHeight + 20 &&
+            ['auto', 'scroll'].includes(getComputedStyle(d).overflowY));
+        for (let pass = 0; pass < 30; pass++) {
+            const nodes = [...dialog.querySelectorAll('[data-testid="cell-frame-title"], div[dir="auto"]')];
+            let current = null;
+            nodes.forEach(n => {
+                if (n.matches('[data-testid="cell-frame-title"]')) {
+                    const nombre = n.innerText.trim();
+                    current = result.find(c => c.nombre === nombre);
+                    if (!current) {
+                        current = { nombre, telefonos: [], extras: [] };
+                        result.push(current);
+                    }
+                    return;
+                }
+                if (!current) return;
+                const valueEl = n.querySelector('[data-testid="selectable-text"]');
+                if (!valueEl) return;
+                const value = valueEl.innerText.trim();
+                const label = [...n.children].map(c => c.innerText.trim()).find(t => t && t !== value) || '';
+                const key = current.nombre + '|' + value;
+                if (!value || seen.has(key)) return;
+                seen.add(key);
+                if (value.replace(/\D/g, '').length >= 7 && /^[+\d\s()-]+$/.test(value)) {
+                    current.telefonos.push(value);
+                } else if (/empresa/i.test(label)) {
+                    current.extras.push(`empresa: ${value}`);
+                }
+            });
+            if (!scroller || scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 5) break;
+            scroller.scrollTop += scroller.clientHeight - 40;
+            await sleep(300);
+        }
+        return result;
+    }
+
+    async function closeDialog() {
+        const btn = document.querySelector('[role="dialog"] button[aria-label="Cerrar"]');
+        if (btn) btn.click();
+        // Nunca usar Escape: en WhatsApp Web cierra el chat abierto.
+        await waitFor(() => !document.querySelector('[role="dialog"]'), 4000);
+    }
+
+    // Abre la tarjeta (un contacto) o "Ver todos" (varios), lee los datos y la cierra.
+    async function resolveContacts(row) {
+        const id = row.getAttribute('data-id');
+        if (contactCache.has(id)) return contactCache.get(id);
+        const verTodos = row.querySelector('button[title="Ver todos"]');
+        const vcardName = row.querySelector('[data-testid="vcard-msg"] [data-testid="selectable-text"]');
+        const opener = verTodos || vcardName;
+        let contacts = [];
+        if (isClickable(opener)) {
+            opener.click();
+            const dialog = await waitFor(() => document.querySelector('[role="dialog"]'), 3000);
+            if (dialog) {
+                await sleep(300);
+                contacts = await readContactDialog(dialog);
+                await closeDialog();
+            }
+        }
+        if (contacts.length === 0) {
+            const nombre = (vcardName || row.querySelector('[title]'))?.innerText?.trim() || 'contacto';
+            contacts = [{ nombre, telefonos: [], extras: [] }];
+        }
+        contactCache.set(id, contacts);
+        contactsFound += contacts.length;
+        contactsWithoutPhone += contacts.filter(c => c.telefonos.length === 0).length;
+        return contacts;
+    }
+
+    function contactLine(c) {
+        const tel = c.telefonos.length ? c.telefonos.join(' / ') : 'sin número';
+        const extras = c.extras.length ? ' | ' + c.extras.join(' | ') : '';
+        return `[CONTACTO: ${c.nombre} | ${tel}${extras}]`;
+    }
+
+    // Toca "Leer más" en los mensajes visibles, para guardar el texto completo.
+    async function expandReadMore() {
+        const buttons = [...document.querySelectorAll('#main [data-testid*="read-more"]')].filter(isClickable);
+        buttons.forEach(b => b.click());
+        if (buttons.length) await sleep(400);
+    }
+
+    // Si WhatsApp ofrece traer mensajes anteriores desde el celular, lo toca.
+    function clickLoadOlder() {
+        const el = [...document.querySelectorAll('#main div, #main button, #main span')].find(e =>
+            e.children.length === 0 && /mensajes anteriores/i.test(e.innerText || ''));
+        if (el && isClickable(el)) {
+            (el.closest('button,[role="button"]') || el).click();
+            return true;
+        }
+        return false;
+    }
+
+    async function collectMessages(targetFromDate, targetToDate) {
         const main = document.querySelector('#main');
         if (!main) return;
 
-        const elements = main.querySelectorAll('[data-pre-plain-text]');
-        elements.forEach(el => {
-            const meta = el.getAttribute('data-pre-plain-text') || '';
-            const textEl = el.querySelector('span.selectable-text') || el;
-            const text = textEl.innerText.trim();
-            const msgDate = parseMessageDate(meta);
+        await expandReadMore();
 
-            if (msgDate) {
-                if (!oldestDateFound || msgDate < oldestDateFound) {
-                    oldestDateFound = msgDate;
-                }
+        // Mensajes y separadores de día, en el orden en que aparecen.
+        const rows = [...main.querySelectorAll('[data-id]')];
+        const dividers = [...main.querySelectorAll('span, div')].filter(e =>
+            e.children.length === 0 && !e.closest('[data-id]') && DIVIDER_RE.test((e.innerText || '').trim()));
+        const items = [...rows, ...dividers].sort((a, b) =>
+            a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1);
+
+        let currentDate = null;
+        for (const el of items) {
+            if (!el.hasAttribute('data-id')) {
+                currentDate = parseDivider(el.innerText) || currentDate;
+                continue;
+            }
+            const id = el.getAttribute('data-id');
+            const pre = el.querySelector('[data-pre-plain-text]');
+            const isContact = !!el.querySelector('[data-testid="vcard-msg"], button[title="Ver todos"]');
+            let meta = pre ? pre.getAttribute('data-pre-plain-text') : '';
+            let msgDate = pre ? parseMessageDate(meta) : null;
+            if (msgDate) currentDate = msgDate;
+            else msgDate = currentDate;
+
+            if (!isContact && (!pre || messagesMap.has(id))) continue;
+            if (isContact && messagesMap.has(id)) continue;
+
+            if (!meta) {
+                // La burbuja de varios contactos no trae fecha ni remitente: se arman igual que las demás.
+                const hora = el.querySelector('[data-testid="msg-meta"]')?.innerText.trim().split('\n')[0] || '';
+                const autor = el.querySelector('span[aria-label$=":"]')?.getAttribute('aria-label').replace(/:$/, '').trim() || 'Desconocido';
+                meta = `[${hora}, ${msgDate ? fmtDate(msgDate) : ''}] ${autor}: `;
             }
 
-            const key = meta + text;
-            if (text && !messagesMap.has(key)) {
-                messagesMap.set(key, {
-                    fullText: `${meta}${text}`,
-                    date: msgDate
-                });
+            if (msgDate && (!oldestDateFound || msgDate < oldestDateFound)) {
+                oldestDateFound = msgDate;
             }
-        });
+
+            let lines;
+            if (isContact) {
+                const contacts = await resolveContacts(el);
+                lines = contacts.map(c => `${meta}${contactLine(c)}`);
+            } else {
+                const text = messageText(pre);
+                if (!text) continue;
+                lines = [`${meta}${text}`];
+            }
+            messagesMap.set(id, { fullText: lines.join('\n'), date: msgDate });
+        }
 
         document.getElementById('ojo-count').innerText = messagesMap.size;
+        document.getElementById('ojo-contacts').innerText =
+            `${contactsFound} (${contactsWithoutPhone} sin número)`;
         if (oldestDateFound) {
             document.getElementById('ojo-oldest-date').innerText = oldestDateFound.toLocaleDateString();
         }
 
+        // Si mientras se leían contactos se detuvo a mano, no seguir.
+        if (!isExtracting) return;
+
         if (messagesMap.size === lastMessagesTotal) {
             consecutiveSameCount++;
+            // WhatsApp a veces pide traer los mensajes viejos desde el celular: se toca y se sigue esperando.
+            if (clickLoadOlder()) consecutiveSameCount = 0;
         } else {
             consecutiveSameCount = 0;
             lastMessagesTotal = messagesMap.size;
@@ -244,8 +443,8 @@
             return;
         }
 
-        // Parada 2: Inicio del chat
-        if (consecutiveSameCount >= 6) {
+        // Parada 2: Inicio del chat. Unos 20 segundos sin mensajes nuevos: los viejos pueden tardar en cargar.
+        if (consecutiveSameCount >= 20) {
             finishAndDownload(targetFromDate, targetToDate, "¡Inicio del chat alcanzado!");
             return;
         }
@@ -261,7 +460,6 @@
     }
 
     function finishAndDownload(fromDate, toDate, reason) {
-        clearInterval(timer);
         timer = null;
         isExtracting = false;
 
@@ -493,6 +691,9 @@
         document.getElementById('ojo-download-ready-box').style.display = 'none';
         document.getElementById('ojo-preview-box').style.display = 'none';
         messagesMap.clear();
+        contactCache.clear();
+        contactsFound = 0;
+        contactsWithoutPhone = 0;
         oldestDateFound = null;
         consecutiveSameCount = 0;
         lastMessagesTotal = 0;
@@ -508,11 +709,16 @@
         document.getElementById('ojo-status').innerText = '🔄 Subiendo y recopilando mensajes...';
         document.getElementById('ojo-status').style.color = '#ffd279';
 
-        collectMessages(fromDate, toDate);
-        timer = setInterval(() => {
-            scrollStep(scrollContainer);
-            collectMessages(fromDate, toDate);
-        }, 750);
+        // Un paso a la vez: abrir tarjetas de contacto lleva tiempo y no se puede pisar con el siguiente.
+        timer = true;
+        (async () => {
+            while (timer) {
+                await collectMessages(fromDate, toDate);
+                if (!timer) break;
+                scrollStep(scrollContainer);
+                await sleep(750);
+            }
+        })();
     };
 
     // Detener manual
@@ -531,11 +737,19 @@
         e.preventDefault();
         e.stopPropagation();
         clearInterval(chatWatcher);
-        if (timer) clearInterval(timer);
+        timer = null;
+        isExtracting = false;
         panel.remove();
     };
 
     // Funciones de emergencia accesibles desde la consola
+    // Para probar sin descargar: lee lo que está en pantalla y devuelve las líneas.
+    window.ojoLeerPantalla = async () => {
+        isExtracting = true;
+        await collectMessages(null, null);
+        isExtracting = false;
+        return [...messagesMap.values()].map(m => m.fullText);
+    };
     window.descargarChat = () => executeSave(lastExportedText, lastFilename);
     window.copiarChat = () => copyToClipboard(lastExportedText);
 })();
